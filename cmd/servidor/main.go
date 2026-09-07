@@ -14,7 +14,6 @@ import (
 	"vaijunto/pkg/protocolo"
 )
 
-// Contador global atomico para dar um ID incremental a cada cliente conectado
 var contadorClientes int64
 
 func main() {
@@ -22,11 +21,8 @@ func main() {
 	flag.Parse()
 
 	endereco := ":" + *porta
-
-	// Inicializa o estado em memoria (usuarios e sessoes)
 	gerenciador := estado.NovoGerenciadorEstado()
 
-	// Abre o socket TCP nativo
 	listener, err := net.Listen("tcp", endereco)
 	if err != nil {
 		log.Fatalf("[ERRO] Falha ao abrir socket TCP em %s: %v", endereco, err)
@@ -34,12 +30,11 @@ func main() {
 	defer listener.Close()
 
 	fmt.Println("================================================================")
-	fmt.Println("VaiJunto - Servidor Central de Caronas")
+	fmt.Println("VaiJunto - Servidor Central de Caronas (Feira de Santana & Salvador)")
 	fmt.Printf("Status: Escutando conexoes TCP no endereco %s\n", endereco)
 	fmt.Println("Concorrencia: Goroutines e sync.RWMutex ativos")
 	fmt.Println("================================================================")
 
-	// Captura Ctrl+C para encerrar o servidor de forma limpa
 	canalSinal := make(chan os.Signal, 1)
 	signal.Notify(canalSinal, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -49,7 +44,6 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Loop principal: aceita novas conexoes continuamente
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -63,13 +57,10 @@ func main() {
 		}
 
 		idCliente := atomic.AddInt64(&contadorClientes, 1)
-
-		// Disparo da goroutine: atende o cliente em segundo plano sem travar o loop
 		go tratarCliente(conn, gerenciador, idCliente)
 	}
 }
 
-// tratarCliente gerencia a comunicacao de um cliente conectado especifico
 func tratarCliente(conn net.Conn, gerenciador *estado.GerenciadorEstado, idCliente int64) {
 	defer conn.Close()
 
@@ -96,11 +87,16 @@ func tratarCliente(conn net.Conn, gerenciador *estado.GerenciadorEstado, idClien
 	}
 }
 
-// processarRequisicao identifica a acao recebida e chama a camada de estado
 func processarRequisicao(req protocolo.Requisicao, gerenciador *estado.GerenciadorEstado, idCliente int64) protocolo.Resposta {
 	log.Printf("[REQUISICAO] Cliente #%d | Acao: '%s' | Usuario: '%s'", idCliente, req.Acao, req.Usuario)
 
 	switch req.Acao {
+	case protocolo.AcaoObterCidades:
+		return protocolo.Resposta{
+			Status:  protocolo.StatusOK,
+			Cidades: estado.ObterCidadesRegionais(),
+		}
+
 	case protocolo.AcaoCadastrar:
 		err := gerenciador.CadastrarUsuario(req.Usuario, req.Senha, req.Nome, req.Papel)
 		if err != nil {
@@ -110,10 +106,7 @@ func processarRequisicao(req protocolo.Requisicao, gerenciador *estado.Gerenciad
 				Erro:   err.Error(),
 			}
 		}
-
-		log.Printf("[CADASTRO SUCESSO] Cliente #%d | Usuario: '%s' | Papel: %s | Total: %d",
-			idCliente, req.Usuario, req.Papel, gerenciador.ObterTotalUsuarios())
-
+		log.Printf("[CADASTRO SUCESSO] Cliente #%d | Usuario: '%s' | Papel: %s", idCliente, req.Usuario, req.Papel)
 		return protocolo.Resposta{
 			Status:   protocolo.StatusOK,
 			Mensagem: fmt.Sprintf("Usuario '%s' (%s) cadastrado com sucesso.", req.Usuario, req.Papel),
@@ -128,15 +121,60 @@ func processarRequisicao(req protocolo.Requisicao, gerenciador *estado.Gerenciad
 				Erro:   err.Error(),
 			}
 		}
-
 		log.Printf("[LOGIN SUCESSO] Cliente #%d | Usuario: '%s' | Papel: %s", idCliente, req.Usuario, papel)
-
 		return protocolo.Resposta{
 			Status:   protocolo.StatusOK,
 			Token:    token,
 			Papel:    papel,
 			Nome:     nome,
 			Mensagem: fmt.Sprintf("Autenticacao realizada com sucesso. Bem-vindo(a), %s.", nome),
+		}
+
+	case protocolo.AcaoPublicarCarona:
+		id, err := gerenciador.PublicarCarona(req.Token, req.Rota, req.Data, req.Horario, req.Assentos, req.PrecoPorTrecho)
+		if err != nil {
+			log.Printf("[CARONA RECUSADA] Cliente #%d | Motivo: %v", idCliente, err)
+			return protocolo.Resposta{
+				Status: protocolo.StatusErro,
+				Erro:   err.Error(),
+			}
+		}
+		log.Printf("[CARONA PUBLICADA] Cliente #%d | ID: %s | Rota: %v", idCliente, id, req.Rota)
+		return protocolo.Resposta{
+			Status:   protocolo.StatusOK,
+			CaronaID: id,
+			Mensagem: fmt.Sprintf("Carona '%s' publicada com sucesso!", id),
+		}
+
+	case protocolo.AcaoBuscarItinerarios:
+		itinerarios, err := gerenciador.BuscarItinerarios(req.Origem, req.Destino, req.Data)
+		if err != nil {
+			log.Printf("[BUSCA ERRO] Cliente #%d | Motivo: %v", idCliente, err)
+			return protocolo.Resposta{
+				Status: protocolo.StatusErro,
+				Erro:   err.Error(),
+			}
+		}
+		log.Printf("[BUSCA SUCESSO] Cliente #%d | Origem: %s | Destino: %s | Resultados: %d", idCliente, req.Origem, req.Destino, len(itinerarios))
+		return protocolo.Resposta{
+			Status:      protocolo.StatusOK,
+			Itinerarios: itinerarios,
+		}
+
+	case protocolo.AcaoReservar:
+		id, err := gerenciador.ReservarItinerario(req.Token, req.Trechos)
+		if err != nil {
+			log.Printf("[RESERVA RECUSADA] Cliente #%d | Motivo: %v", idCliente, err)
+			return protocolo.Resposta{
+				Status: protocolo.StatusErro,
+				Erro:   err.Error(),
+			}
+		}
+		log.Printf("[RESERVA CONFIRMADA] Cliente #%d | ID: %s", idCliente, id)
+		return protocolo.Resposta{
+			Status:    protocolo.StatusOK,
+			ReservaID: id,
+			Mensagem:  fmt.Sprintf("Reserva '%s' realizada com sucesso!", id),
 		}
 
 	default:

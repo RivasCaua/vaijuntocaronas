@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// CidadesRegionais representa o catálogo de cidades suportadas na região de Feira de Santana e Salvador
+// CidadesRegionais limita o catálogo inicial para o Portal do Sertão, Recôncavo e RMS
 var CidadesRegionais = []string{
 	"Salvador",
 	"Simões Filho",
@@ -21,14 +21,14 @@ var CidadesRegionais = []string{
 	"Santo Antônio de Jesus",
 }
 
-// ObterCidadesRegionais retorna uma cópia da lista de cidades atendidas
+// ObterCidadesRegionais retorna a lista completa de cidades atendidas
 func ObterCidadesRegionais() []string {
 	cidades := make([]string, len(CidadesRegionais))
 	copy(cidades, CidadesRegionais)
 	return cidades
 }
 
-// NormalizarCidade valida e ajusta a grafia da cidade de acordo com o catálogo regional
+// NormalizarCidade ajusta a grafia oficial da cidade (case-insensitive)
 func NormalizarCidade(cidade string) (string, bool) {
 	cidadeNorm := strings.ToLower(strings.TrimSpace(cidade))
 	for _, c := range CidadesRegionais {
@@ -39,7 +39,7 @@ func NormalizarCidade(cidade string) (string, bool) {
 	return cidade, false
 }
 
-// ValidarRota verifica se a sequência de paradas possui pelo menos 2 cidades válidas e sem duplicidade consecutiva
+// ValidarRota garante que a rota possui pelo menos 2 paradas válidas e sem duplicações consecutivas
 func ValidarRota(rota []string) ([]string, error) {
 	if len(rota) < 2 {
 		return nil, errors.New("a rota deve conter no mínimo 2 cidades (origem e destino)")
