@@ -5,7 +5,7 @@
 
 ---
 
-## 📌 Visão Geral do Projeto
+## Visão Geral do Projeto
 
 O **VaiJunto** é um sistema centralizado desenvolvido em **Go (Golang)** focado na gestão de caronas intermunicipais entre Salvador, Feira de Santana e região (Portal do Sertão, Recôncavo e RMS).
 
@@ -13,11 +13,11 @@ O sistema lida com o desafio de múltiplos usuários (motoristas e passageiros) 
 
 ---
 
-## 🏛️ Visão Detalhada da Arquitetura do Sistema
+## Visão Detalhada da Arquitetura do Sistema
 
 A arquitetura do **VaiJunto** foi projetada visando alto desempenho, desacoplamento de camadas, conectividade de baixo nível e controle absoluto de concorrência em memória.
 
-### 📐 Diagrama da Arquitetura de Componentes
+### Diagrama da Arquitetura de Componentes
 
 ```text
  ┌──────────────────────┐         ┌──────────────────────┐
@@ -61,7 +61,7 @@ A arquitetura do **VaiJunto** foi projetada visando alto desempenho, desacoplame
 
 ---
 
-## 🧠 Decisões de Arquitetura de Software & Engenharia
+## Decisões de Arquitetura de Software & Engenharia
 
 ### 1. Camada de Rede: Sockets TCP Nativo vs HTTP/REST
 * **Escolha:** Utilização de sockets **TCP puros** (`net.Conn`) em substituição a HTTP/REST.
@@ -87,7 +87,7 @@ Para erradicar a ocorrência de **Overbooking** sob concorrência massiva, a res
 
 ---
 
-## 📦 Pacotes da Solução (`pkg/` e `cmd/`)
+## Pacotes da Solução (`pkg/` e `cmd/`)
 
 A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project Layout*), dividida nos seguintes pacotes:
 
@@ -103,7 +103,7 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 
 ---
 
-## 📁 Estrutura do Projeto
+## Estrutura do Projeto
 
 ```text
 .
@@ -128,9 +128,9 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 
 ---
 
-## 📖 Como Usar (Guia dos Clientes)
+## Como Usar (Guia dos Clientes)
 
-### 🚘 Para Motoristas (`cmd/motorista`):
+### Para Motoristas (`cmd/motorista`):
 1. **Cadastrar/Login:** Cadastre-se escolhendo o papel de motorista e efetue o login para receber um token de sessão.
 2. **Publicar Carona (Estilo Uber):**
    * Selecione a cidade de **Origem** (ex: *Salvador*).
@@ -139,7 +139,7 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
    * Informe a data (AAAA-MM-DD), horários, assentos livres e preço por trecho.
 3. **Listar e Cancelar:** Consulte suas caronas ativas e o status de ocupação de cada sub-trecho ou cancele uma carona se necessário.
 
-### 🎒 Para Passageiros (`cmd/passageiro`):
+### Para Passageiros (`cmd/passageiro`):
 1. **Cadastrar/Login:** Cadastre-se escolhendo o papel de passageiro e efetue o login.
 2. **Buscar Itinerários:** Informe a cidade de partida, destino e data. O sistema trará todas as opções de itinerários diretos ou combinados ordenados por menor preço e horário.
 3. **Reservar:** Selecione o itinerário desejado para efetuar a reserva atômica.
@@ -147,7 +147,7 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 
 ---
 
-## 🚀 Como Executar
+## Como Executar
 
 ### Pré-requisitos
 * **Go 1.20+** instalado OU **Docker / Docker Compose**.
@@ -190,7 +190,7 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 
 ---
 
-## 🐳 Dockerfile e Configuração de Ambiente
+## Dockerfile e Configuração de Ambiente
 
 O projeto utiliza **Multi-Stage Build** no `Dockerfile`:
 1. **Estágio 1 (Builder):** Utiliza a imagem oficial `golang:1.22-alpine`, configura o diretório `/app`, copia os módulos e compila estaticamente todos os executáveis Go sem dependências externas (`CGO_ENABLED=0 GOOS=linux`).
@@ -198,7 +198,7 @@ O projeto utiliza **Multi-Stage Build** no `Dockerfile`:
 
 ---
 
-## ⚡ Teste de Carga e Auditoria de Concorrência
+## Teste de Carga e Auditoria de Concorrência
 
 O módulo `cmd/teste_carga` simula o cenário crítico de **disputa simultânea por vagas**:
 * Publica uma carona de teste com número limitado de assentos (ex: 5 vagas).
@@ -207,7 +207,7 @@ O módulo `cmd/teste_carga` simula o cenário crítico de **disputa simultânea 
 
 ---
 
-## 🎯 Guia de Apresentação (Roteiro de Fala para Avaliação)
+## Guia de Apresentação (Roteiro de Fala para Avaliação)
 
 1. **Abertura & Contexto:** Apresente o **VaiJunto** como um servidor centralizado em Go que atende conexões TCP puras usando payloads JSON delimitados por `\n`.
 2. **Decisão de Negócio (Modelo de Sub-Trechos):** Mostre que rotas são fragmentadas (ex: `Salvador -> Amélia Rodrigues -> Feira de Santana`), alocando vagas por segmento (`VagasPorTrecho`).
