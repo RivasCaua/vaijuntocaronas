@@ -5,11 +5,11 @@
 
 ---
 
-## 📌 Visão Geral do Projeto
+## Visão Geral do Projeto
 
 O **VaiJunto** é um sistema centralizado desenvolvido em **Go (Golang)** focado na gestão de caronas intermunicipais entre Salvador, Feira de Santana e região (Portal do Sertão, Recôncavo e RMS).
 
-O sistema lida com o desafio de múltiplos usuários (motoristas e passageiros) realizando acessos simultâneos — cadastrando usuários, publicando caronas, consultando itinerários e efetuando reservas concorrentes.
+O sistema lida com o desafio de múltiplos usuários (motoristas e passageiros) realizando acessos simultâneos; cadastrando usuários, publicando caronas, consultando itinerários e efetuando reservas concorrentes.
 
 ---
 
@@ -36,7 +36,7 @@ Garantia de **0% Overbooking**:
 
 ---
 
-## 📁 Estrutura do Projeto
+## Estrutura do Projeto
 
 ```text
 .
@@ -55,7 +55,7 @@ Garantia de **0% Overbooking**:
 
 ---
 
-## 🚀 Como Executar
+## Como Executar
 
 ### Pré-requisitos
 * **Go 1.20+** instalado OU **Docker / Docker Compose**.
@@ -98,7 +98,7 @@ Garantia de **0% Overbooking**:
 
 ---
 
-## ⚡ Teste de Carga e Auditoria de Concorrência
+## Teste de Carga e Auditoria de Concorrência
 
 O módulo `cmd/teste_carga` simula o cenário crítico de **disputa simultânea por vagas**:
 * Publica uma carona de teste com número limitado de assentos (ex: 5 vagas).
