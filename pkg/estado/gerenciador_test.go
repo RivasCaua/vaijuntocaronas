@@ -43,12 +43,9 @@ func TestFluxoCaronaEReservaAtoma(t *testing.T) {
 
 	// 3. Publicar Carona: Salvador -> Amélia Rodrigues -> Feira de Santana (1 vaga livre por trecho)
 	rota := []string{"Salvador", "Amélia Rodrigues", "Feira de Santana"}
-	caronaID, err := g.PublicarCarona(tokenMot, rota, "2026-09-20", "08:00", 1, 25.0)
-	if err != nil {
+	caronaID, err := g.PublicarCarona(tokenMot, rota, "2026-09-20", "08:00", "09:30", 1, 25.0)
+	if err != nil || caronaID == "" {
 		t.Fatalf("Erro ao publicar carona: %v", err)
-	}
-	if caronaID == "" {
-		t.Fatalf("ID de carona invalido")
 	}
 
 	// 4. Buscar itinerário de Salvador a Feira de Santana
@@ -60,7 +57,7 @@ func TestFluxoCaronaEReservaAtoma(t *testing.T) {
 		t.Fatalf("Esperava 1 itinerario, recebeu %d", len(itinerarios))
 	}
 
-	// 5. Testar Concorrência: Passageiro 1 e Passageiro 2 tentam reservar ao mesmo tempo a única vaga do itinerário completo
+	// 5. Testar Concorrência: Passageiro 1 e Passageiro 2 tentam reservar ao mesmo tempo
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -79,18 +76,45 @@ func TestFluxoCaronaEReservaAtoma(t *testing.T) {
 
 	wg.Wait()
 
-	// Exatamente um deve ter sucesso e o outro deve falhar por falta de vagas (Reserva Atômica)
 	if err1 == nil && err2 == nil {
 		t.Fatalf("ERRO: Ambos os passageiros conseguiram reservar a mesma vaga! Falha de concorrência.")
 	}
 
-	if err1 != nil && err2 != nil {
-		t.Fatalf("ERRO: Ambos falharam ao reservar! err1: %v, err2: %v", err1, err2)
+	reservaGanhadora := res1
+	tokenGanhador := tokenPass1
+	if err1 != nil {
+		reservaGanhadora = res2
+		tokenGanhador = tokenPass2
 	}
 
-	if err1 == nil {
-		t.Logf("[TESTE PASSOU] Passageiro 1 reservou com sucesso: %s. Passageiro 2 foi recusado: %v\n", res1, err2)
-	} else {
-		t.Logf("[TESTE PASSOU] Passageiro 2 reservou com sucesso: %s. Passageiro 1 foi recusado: %v\n", res2, err1)
+	// 6. Testar Listagem de Reservas do Passageiro
+	reservasPass, err := g.ListarReservasPassageiro(tokenGanhador)
+	if err != nil || len(reservasPass) != 1 {
+		t.Fatalf("Erro ao listar reservas do passageiro ganhador: %v", err)
 	}
+
+	// 7. Testar Cancelamento de Reserva (devolve vagas)
+	err = g.CancelarReserva(tokenGanhador, reservaGanhadora)
+	if err != nil {
+		t.Fatalf("Erro ao cancelar reserva: %v", err)
+	}
+
+	// 8. Buscar novamente: com a vaga devolvida, a carona deve voltar a ficar disponível!
+	itinerariosNovos, err := g.BuscarItinerarios("Salvador", "Feira de Santana", "2026-09-20")
+	if err != nil || len(itinerariosNovos) != 1 {
+		t.Fatalf("Esperava que a carona ficasse disponivel novamente apos o cancelamento! Recebeu: %d", len(itinerariosNovos))
+	}
+
+	// 9. Testar Listar e Cancelar Carona do Motorista
+	caronasMot, err := g.ListarCaronasMotorista(tokenMot)
+	if err != nil || len(caronasMot) != 1 {
+		t.Fatalf("Erro ao listar caronas do motorista: %v", err)
+	}
+
+	err = g.CancelarCarona(tokenMot, caronaID)
+	if err != nil {
+		t.Fatalf("Erro ao cancelar carona pelo motorista: %v", err)
+	}
+
+	t.Logf("[TESTE COMPLETO PASSOU] Reserva atômica, listagem e cancelamentos (passageiro/motorista) funcionando perfeitamente.")
 }

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  servidor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_servidor
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  teste_carga:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_teste_carga
+    command: ["/app/bin/teste_carga", "-servidor", "servidor:8080", "-clientes", "30", "-vagas", "5"]
+    depends_on:
+      - servidor
+    profiles:
+      - teste

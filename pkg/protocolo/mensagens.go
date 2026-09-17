@@ -28,16 +28,20 @@ const (
 
 // ItemTrecho representa um segmento reservável (CaronaID + Origem + Destino)
 type ItemTrecho struct {
-	CaronaID string  `json:"carona_id"`
-	Origem   string  `json:"origem"`
-	Destino  string  `json:"destino"`
-	Preco    float64 `json:"preco,omitempty"`
+	CaronaID       string  `json:"carona_id"`
+	Origem         string  `json:"origem"`
+	Destino        string  `json:"destino"`
+	Preco          float64 `json:"preco,omitempty"`
+	HorarioPartida string  `json:"horario_partida,omitempty"`
+	HorarioChegada string  `json:"horario_chegada,omitempty"`
 }
 
 // ItinerarioDTO representa uma opção de viagem (pode combinar 1 ou mais trechos)
 type ItinerarioDTO struct {
-	Trechos    []ItemTrecho `json:"trechos"`
-	PrecoTotal float64      `json:"preco_total"`
+	Trechos        []ItemTrecho `json:"trechos"`
+	PrecoTotal     float64      `json:"preco_total"`
+	HorarioPartida string       `json:"horario_partida,omitempty"`
+	HorarioChegada string       `json:"horario_chegada,omitempty"`
 }
 
 // TrechoCaronaDTO detalha a ocupação por sub-trecho de uma carona
@@ -56,6 +60,7 @@ type CaronaDTO struct {
 	Rota           []string          `json:"rota"`
 	Data           string            `json:"data"`
 	Horario        string            `json:"horario"`
+	HorarioChegada string            `json:"horario_chegada,omitempty"`
 	Assentos       int               `json:"assentos"`
 	PrecoPorTrecho float64           `json:"preco_por_trecho"`
 	Trechos        []TrechoCaronaDTO `json:"trechos,omitempty"`
@@ -82,6 +87,7 @@ type Requisicao struct {
 	Rota           []string     `json:"rota,omitempty"`
 	Data           string       `json:"data,omitempty"`
 	Horario        string       `json:"horario,omitempty"`
+	HorarioChegada string       `json:"horario_chegada,omitempty"`
 	Assentos       int          `json:"assentos,omitempty"`
 	PrecoPorTrecho float64      `json:"preco_por_trecho,omitempty"`
 	Origem         string       `json:"origem,omitempty"`

@@ -8,7 +8,8 @@ type Carona struct {
 	MotoristaLogin       string              `json:"motorista_login"`
 	Rota                 []string            `json:"rota"`                  // Ex: ["Salvador", "Amélia Rodrigues", "Feira de Santana"]
 	Data                 string              `json:"data"`                  // Ex: "2026-09-20"
-	Horario              string              `json:"horario"`               // Ex: "08:00"
+	Horario              string              `json:"horario"`               // Ex: "08:00" (Partida)
+	HorarioChegada       string              `json:"horario_chegada"`       // Ex: "09:30" (Previsão de chegada)
 	AssentosTotais       int                 `json:"assentos_totais"`        // Capacidade total por trecho
 	PrecoPorTrecho       float64             `json:"preco_por_trecho"`       // Valor de cada trecho individual
 	VagasPorTrecho       map[string]int      `json:"vagas_por_trecho"`       // Chave: "Salvador->Amélia Rodrigues", Valor: vagas livres

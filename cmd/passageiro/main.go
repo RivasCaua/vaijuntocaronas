@@ -65,8 +65,10 @@ func main() {
 		} else {
 			fmt.Printf("\n--- PAINEL DO PASSAGEIRO [%s | Login: %s] ---\n", sessao.Nome, sessao.Usuario)
 			fmt.Println("1. Buscar e Reservar Vaga")
-			fmt.Println("2. Logout")
-			fmt.Println("3. Encerrar aplicacao")
+			fmt.Println("2. Minhas reservas ativas")
+			fmt.Println("3. Cancelar reserva")
+			fmt.Println("4. Logout")
+			fmt.Println("5. Encerrar aplicacao")
 			fmt.Print("Opcao: ")
 
 			opcao := lerLinha(scannerTeclado)
@@ -74,9 +76,13 @@ func main() {
 			case "1":
 				buscarEReservar(conn, scannerRede, scannerTeclado, sessao.Token)
 			case "2":
+				listarMinhasReservas(conn, scannerRede, sessao.Token)
+			case "3":
+				cancelarReserva(conn, scannerRede, scannerTeclado, sessao.Token)
+			case "4":
 				fmt.Printf("[INFO] Logout efetuado para o usuario '%s'.\n", sessao.Usuario)
 				sessao = nil
-			case "3", "sair":
+			case "5", "sair":
 				fmt.Println("[INFO] Aplicacao encerrada.")
 				return
 			default:
@@ -123,9 +129,22 @@ func buscarEReservar(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, 
 		return
 	}
 
-	fmt.Println("\n--- ITINERARIOS ENCONTRADOS ---")
+	fmt.Println("\n--- ITINERARIOS ENCONTRADOS (Ordenados por Menor Preco) ---")
 	for i, itin := range resp.Itinerarios {
-		fmt.Printf("\nOpcao [%d] - Preco Total: R$ %.2f\n", i+1, itin.PrecoTotal)
+		tagDestaque := ""
+		if i == 0 {
+			tagDestaque = " [MELHOR OFERTA - MAIS BARATA]"
+		}
+
+		infoHorario := ""
+		if itin.HorarioPartida != "" {
+			infoHorario = fmt.Sprintf(" | Partida: %s", itin.HorarioPartida)
+			if itin.HorarioChegada != "" {
+				infoHorario += fmt.Sprintf(" -> Chegada Prevista: %s", itin.HorarioChegada)
+			}
+		}
+
+		fmt.Printf("\nOpcao [%d]%s - Preco Total: R$ %.2f%s\n", i+1, tagDestaque, itin.PrecoTotal, infoHorario)
 		for _, t := range itin.Trechos {
 			fmt.Printf("   -> Carona %s: %s -> %s (R$ %.2f)\n", t.CaronaID, t.Origem, t.Destino, t.Preco)
 		}
@@ -159,6 +178,74 @@ func buscarEReservar(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, 
 		} else {
 			fmt.Printf("\n[FALHA ATOMICA] %s\n", respReserva.Erro)
 		}
+	}
+}
+
+func listarMinhasReservas(conn net.Conn, scannerRede *bufio.Scanner, token string) {
+	req := protocolo.Requisicao{
+		Acao:  protocolo.AcaoListarReservas,
+		Token: token,
+	}
+
+	if err := protocolo.EnviarMensagem(conn, req); err != nil {
+		fmt.Printf("[ERRO] Falha ao buscar reservas: %v\n", err)
+		return
+	}
+
+	var resp protocolo.Resposta
+	if err := protocolo.LerMensagem(scannerRede, &resp); err != nil {
+		fmt.Printf("[ERRO] Falha ao ler resposta: %v\n", err)
+		return
+	}
+
+	if resp.Status != protocolo.StatusOK || len(resp.Reservas) == 0 {
+		fmt.Println("[INFO] Voce nao possui reservas cadastradas.")
+		return
+	}
+
+	fmt.Println("\n====================================================")
+	fmt.Println("             MINHAS RESERVAS DE VIAGEM")
+	fmt.Println("====================================================")
+
+	for _, r := range resp.Reservas {
+		fmt.Printf("\n🎫 Reserva ID: %s | Data: %s | Status: [%s] | Total: R$ %.2f\n", r.ReservaID, r.Data, r.Status, r.PrecoTotal)
+		fmt.Println("   Trechos reservados:")
+		for _, t := range r.Trechos {
+			fmt.Printf("      - Carona %s: %s -> %s (R$ %.2f)\n", t.CaronaID, t.Origem, t.Destino, t.Preco)
+		}
+	}
+}
+
+func cancelarReserva(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, token string) {
+	listarMinhasReservas(conn, scannerRede, token)
+
+	fmt.Print("\nDigite o ID da reserva que deseja cancelar (ex: r-1) ou pressione Enter para voltar: ")
+	id := lerLinha(scannerTeclado)
+	if id == "" {
+		return
+	}
+
+	req := protocolo.Requisicao{
+		Acao:      protocolo.AcaoCancelarReserva,
+		Token:     token,
+		ReservaID: id,
+	}
+
+	if err := protocolo.EnviarMensagem(conn, req); err != nil {
+		fmt.Printf("[ERRO] Falha ao enviar cancelamento: %v\n", err)
+		return
+	}
+
+	var resp protocolo.Resposta
+	if err := protocolo.LerMensagem(scannerRede, &resp); err != nil {
+		fmt.Printf("[ERRO] Falha ao ler resposta: %v\n", err)
+		return
+	}
+
+	if resp.Status == protocolo.StatusOK {
+		fmt.Printf("\n[SUCESSO] %s\n", resp.Mensagem)
+	} else {
+		fmt.Printf("\n[ERRO] %s\n", resp.Erro)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -132,7 +133,7 @@ func (g *GerenciadorEstado) ObterTotalUsuarios() int {
 }
 
 // PublicarCarona desmembra a rota em trechos e inicializa as vagas por trecho
-func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, horario string, assentos int, preco float64) (string, error) {
+func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, horario, horarioChegada string, assentos int, preco float64) (string, error) {
 	u, err := g.ValidarToken(token)
 	if err != nil {
 		return "", err
@@ -149,6 +150,9 @@ func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, ho
 	if assentos <= 0 || preco <= 0 {
 		return "", errors.New("assentos e preco por trecho devem ser maiores que zero")
 	}
+
+	horario = strings.TrimSpace(horario)
+	horarioChegada = strings.TrimSpace(horarioChegada)
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -171,6 +175,7 @@ func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, ho
 		Rota:                 rotaValida,
 		Data:                 data,
 		Horario:              horario,
+		HorarioChegada:       horarioChegada,
 		AssentosTotais:       assentos,
 		PrecoPorTrecho:       preco,
 		VagasPorTrecho:       vagasPorTrecho,
@@ -181,7 +186,7 @@ func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, ho
 	return caronaID, nil
 }
 
-// BuscarItinerarios encontra combinacoes de trechos com vagas disponiveis
+// BuscarItinerarios encontra combinacoes de trechos com vagas disponiveis e ordena por prioridade (menor preco)
 func (g *GerenciadorEstado) BuscarItinerarios(origem, destino, data string) ([]protocolo.ItinerarioDTO, error) {
 	origemNorm, okOrig := NormalizarCidade(origem)
 	destinoNorm, okDest := NormalizarCidade(destino)
@@ -227,22 +232,36 @@ func (g *GerenciadorEstado) BuscarItinerarios(origem, destino, data string) ([]p
 				}
 
 				trechos = append(trechos, protocolo.ItemTrecho{
-					CaronaID: c.ID,
-					Origem:   o,
-					Destino:  d,
-					Preco:    c.PrecoPorTrecho,
+					CaronaID:       c.ID,
+					Origem:         o,
+					Destino:        d,
+					Preco:          c.PrecoPorTrecho,
+					HorarioPartida: c.Horario,
+					HorarioChegada: c.HorarioChegada,
 				})
 				precoTotal += c.PrecoPorTrecho
 			}
 
 			if temVagaTodas {
 				itinerarios = append(itinerarios, protocolo.ItinerarioDTO{
-					Trechos:    trechos,
-					PrecoTotal: precoTotal,
+					Trechos:        trechos,
+					PrecoTotal:     precoTotal,
+					HorarioPartida: c.Horario,
+					HorarioChegada: c.HorarioChegada,
 				})
 			}
 		}
 	}
+
+	sort.Slice(itinerarios, func(i, j int) bool {
+		if itinerarios[i].PrecoTotal != itinerarios[j].PrecoTotal {
+			return itinerarios[i].PrecoTotal < itinerarios[j].PrecoTotal
+		}
+		if len(itinerarios[i].Trechos) != len(itinerarios[j].Trechos) {
+			return len(itinerarios[i].Trechos) < len(itinerarios[j].Trechos)
+		}
+		return itinerarios[i].HorarioPartida < itinerarios[j].HorarioPartida
+	})
 
 	return itinerarios, nil
 }
@@ -311,4 +330,166 @@ func (g *GerenciadorEstado) ReservarItinerario(token string, trechosSolicitados 
 	}
 
 	return reservaID, nil
+}
+
+// ListarCaronasMotorista retorna as caronas cadastradas pelo motorista com detalhes dos trechos
+func (g *GerenciadorEstado) ListarCaronasMotorista(token string) ([]protocolo.CaronaDTO, error) {
+	u, err := g.ValidarToken(token)
+	if err != nil {
+		return nil, err
+	}
+
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	var caronasDTO []protocolo.CaronaDTO
+
+	for _, c := range g.caronas {
+		if c.MotoristaLogin == u.Login && c.Ativa {
+			var trechosDTO []protocolo.TrechoCaronaDTO
+			for i := 0; i < len(c.Rota)-1; i++ {
+				o := c.Rota[i]
+				d := c.Rota[i+1]
+				chave := fmt.Sprintf("%s->%s", o, d)
+
+				trechosDTO = append(trechosDTO, protocolo.TrechoCaronaDTO{
+					Trecho:      chave,
+					Origem:      o,
+					Destino:     d,
+					VagasLivres: c.VagasPorTrecho[chave],
+					Passageiros: c.PassageirosPorTrecho[chave],
+				})
+			}
+
+			caronasDTO = append(caronasDTO, protocolo.CaronaDTO{
+				CaronaID:       c.ID,
+				Motorista:      c.MotoristaLogin,
+				Rota:           c.Rota,
+				Data:           c.Data,
+				Horario:        c.Horario,
+				HorarioChegada: c.HorarioChegada,
+				Assentos:       c.AssentosTotais,
+				PrecoPorTrecho: c.PrecoPorTrecho,
+				Trechos:        trechosDTO,
+			})
+		}
+	}
+
+	return caronasDTO, nil
+}
+
+// CancelarCarona desativa a carona e cancela as reservas vinculadas a ela
+func (g *GerenciadorEstado) CancelarCarona(token, caronaID string) error {
+	u, err := g.ValidarToken(token)
+	if err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	c, existe := g.caronas[caronaID]
+	if !existe || !c.Ativa {
+		return fmt.Errorf("carona %s nao encontrada ou ja cancelada", caronaID)
+	}
+
+	if c.MotoristaLogin != u.Login {
+		return errors.New("voce nao tem permissao para cancelar esta carona")
+	}
+
+	c.Ativa = false
+
+	for _, r := range g.reservas {
+		if r.Status == "ATIVA" {
+			afetada := false
+			for _, item := range r.Trechos {
+				if item.CaronaID == caronaID {
+					afetada = true
+					break
+				}
+			}
+			if afetada {
+				r.Status = "CANCELADA_PELO_MOTORISTA"
+			}
+		}
+	}
+
+	return nil
+}
+
+// ListarReservasPassageiro retorna o historico de reservas do passageiro
+func (g *GerenciadorEstado) ListarReservasPassageiro(token string) ([]protocolo.ReservaDTO, error) {
+	u, err := g.ValidarToken(token)
+	if err != nil {
+		return nil, err
+	}
+
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	var reservasDTO []protocolo.ReservaDTO
+
+	for _, r := range g.reservas {
+		if r.PassageiroLogin == u.Login {
+			var trechosDTO []protocolo.ItemTrecho
+			for _, item := range r.Trechos {
+				trechosDTO = append(trechosDTO, protocolo.ItemTrecho{
+					CaronaID: item.CaronaID,
+					Origem:   item.Origem,
+					Destino:  item.Destino,
+					Preco:    item.Preco,
+				})
+			}
+
+			reservasDTO = append(reservasDTO, protocolo.ReservaDTO{
+				ReservaID:  r.ID,
+				Passageiro: r.PassageiroLogin,
+				Trechos:    trechosDTO,
+				PrecoTotal: r.PrecoTotal,
+				Data:       r.Data,
+				Status:     r.Status,
+			})
+		}
+	}
+
+	return reservasDTO, nil
+}
+
+// CancelarReserva devolve as vagas aos sub-trechos e altera o status para CANCELADA
+func (g *GerenciadorEstado) CancelarReserva(token, reservaID string) error {
+	u, err := g.ValidarToken(token)
+	if err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	r, existe := g.reservas[reservaID]
+	if !existe || r.Status != "ATIVA" {
+		return fmt.Errorf("reserva %s nao encontrada ou ja cancelada", reservaID)
+	}
+
+	if r.PassageiroLogin != u.Login {
+		return errors.New("voce nao tem permissao para cancelar esta reserva")
+	}
+
+	r.Status = "CANCELADA"
+
+	for _, item := range r.Trechos {
+		if c, ok := g.caronas[item.CaronaID]; ok {
+			chave := fmt.Sprintf("%s->%s", item.Origem, item.Destino)
+			c.VagasPorTrecho[chave]++
+
+			novosPassageiros := make([]string, 0)
+			for _, pass := range c.PassageirosPorTrecho[chave] {
+				if pass != u.Login {
+					novosPassageiros = append(novosPassageiros, pass)
+				}
+			}
+			c.PassageirosPorTrecho[chave] = novosPassageiros
+		}
+	}
+
+	return nil
 }

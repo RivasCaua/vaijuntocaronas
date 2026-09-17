@@ -131,7 +131,7 @@ func processarRequisicao(req protocolo.Requisicao, gerenciador *estado.Gerenciad
 		}
 
 	case protocolo.AcaoPublicarCarona:
-		id, err := gerenciador.PublicarCarona(req.Token, req.Rota, req.Data, req.Horario, req.Assentos, req.PrecoPorTrecho)
+		id, err := gerenciador.PublicarCarona(req.Token, req.Rota, req.Data, req.Horario, req.HorarioChegada, req.Assentos, req.PrecoPorTrecho)
 		if err != nil {
 			log.Printf("[CARONA RECUSADA] Cliente #%d | Motivo: %v", idCliente, err)
 			return protocolo.Resposta{
@@ -176,6 +176,36 @@ func processarRequisicao(req protocolo.Requisicao, gerenciador *estado.Gerenciad
 			ReservaID: id,
 			Mensagem:  fmt.Sprintf("Reserva '%s' realizada com sucesso!", id),
 		}
+
+	case protocolo.AcaoListarCaronas:
+		caronas, err := gerenciador.ListarCaronasMotorista(req.Token)
+		if err != nil {
+			return protocolo.Resposta{Status: protocolo.StatusErro, Erro: err.Error()}
+		}
+		return protocolo.Resposta{Status: protocolo.StatusOK, Caronas: caronas}
+
+	case protocolo.AcaoCancelarCarona:
+		err := gerenciador.CancelarCarona(req.Token, req.CaronaID)
+		if err != nil {
+			return protocolo.Resposta{Status: protocolo.StatusErro, Erro: err.Error()}
+		}
+		log.Printf("[CARONA CANCELADA] Cliente #%d | ID: %s", idCliente, req.CaronaID)
+		return protocolo.Resposta{Status: protocolo.StatusOK, Mensagem: fmt.Sprintf("Carona '%s' cancelada com sucesso.", req.CaronaID)}
+
+	case protocolo.AcaoListarReservas:
+		reservas, err := gerenciador.ListarReservasPassageiro(req.Token)
+		if err != nil {
+			return protocolo.Resposta{Status: protocolo.StatusErro, Erro: err.Error()}
+		}
+		return protocolo.Resposta{Status: protocolo.StatusOK, Reservas: reservas}
+
+	case protocolo.AcaoCancelarReserva:
+		err := gerenciador.CancelarReserva(req.Token, req.ReservaID)
+		if err != nil {
+			return protocolo.Resposta{Status: protocolo.StatusErro, Erro: err.Error()}
+		}
+		log.Printf("[RESERVA CANCELADA] Cliente #%d | ID: %s", idCliente, req.ReservaID)
+		return protocolo.Resposta{Status: protocolo.StatusOK, Mensagem: fmt.Sprintf("Reserva '%s' cancelada com sucesso. Vagas devolvidas.", req.ReservaID)}
 
 	default:
 		log.Printf("[ACAO INVALIDA] Cliente #%d | Acao nao reconhecida: '%s'", idCliente, req.Acao)

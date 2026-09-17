@@ -65,8 +65,10 @@ func main() {
 		} else {
 			fmt.Printf("\n--- PAINEL DO MOTORISTA [%s | Login: %s] ---\n", sessao.Nome, sessao.Usuario)
 			fmt.Println("1. Publicar carona (Estilo Uber: Inicio -> Fim -> Paradas)")
-			fmt.Println("2. Logout")
-			fmt.Println("3. Encerrar aplicacao")
+			fmt.Println("2. Minhas caronas publicadas")
+			fmt.Println("3. Cancelar carona")
+			fmt.Println("4. Logout")
+			fmt.Println("5. Encerrar aplicacao")
 			fmt.Print("Opcao: ")
 
 			opcao := lerLinha(scannerTeclado)
@@ -74,9 +76,13 @@ func main() {
 			case "1":
 				publicarCarona(conn, scannerRede, scannerTeclado, sessao.Token)
 			case "2":
+				listarMinhasCaronas(conn, scannerRede, sessao.Token)
+			case "3":
+				cancelarCarona(conn, scannerRede, scannerTeclado, sessao.Token)
+			case "4":
 				fmt.Printf("[INFO] Logout efetuado para o usuario '%s'.\n", sessao.Usuario)
 				sessao = nil
-			case "3", "sair":
+			case "5", "sair":
 				fmt.Println("[INFO] Aplicacao encerrada.")
 				return
 			default:
@@ -97,10 +103,7 @@ func publicarCarona(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, t
 	fmt.Println("   PUBLICAR CARONA (Estilo Uber / Passo a Passo)")
 	fmt.Println("====================================================")
 
-	// Passo 1: Origem
 	origem := escolherCidade(scannerTeclado, cidades, "Ponto de INICIO (Origem)")
-
-	// Passo 2: Destino Final
 	destino := escolherCidade(scannerTeclado, cidades, "Ponto FIM (Destino Final)")
 	for destino == origem {
 		fmt.Println("[AVISO] O destino nao pode ser igual a origem!")
@@ -109,7 +112,6 @@ func publicarCarona(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, t
 
 	rota := []string{origem}
 
-	// Passo 3: Adicionar Paradas Intermediárias
 	fmt.Printf("\nDeseja adicionar paradas intermediarias entre %s e %s? (s/n): ", origem, destino)
 	if resp := lerLinha(scannerTeclado); strings.ToLower(resp) == "s" || strings.ToLower(resp) == "sim" {
 		fmt.Print("Quantas paradas intermediarias deseja adicionar? ")
@@ -132,6 +134,9 @@ func publicarCarona(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, t
 	fmt.Print("Horario de partida (HH:MM): ")
 	horario := lerLinha(scannerTeclado)
 
+	fmt.Print("Horario previsto de chegada (HH:MM): ")
+	horarioChegada := lerLinha(scannerTeclado)
+
 	fmt.Print("Quantidade de assentos livres: ")
 	assentos, _ := strconv.Atoi(lerLinha(scannerTeclado))
 
@@ -144,6 +149,7 @@ func publicarCarona(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, t
 		Rota:           rota,
 		Data:           data,
 		Horario:        horario,
+		HorarioChegada: horarioChegada,
 		Assentos:       assentos,
 		PrecoPorTrecho: preco,
 	}
@@ -161,6 +167,79 @@ func publicarCarona(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, t
 
 	if resp.Status == protocolo.StatusOK {
 		fmt.Printf("\n[SUCESSO] %s (ID: %s)\n", resp.Mensagem, resp.CaronaID)
+	} else {
+		fmt.Printf("\n[ERRO] %s\n", resp.Erro)
+	}
+}
+
+func listarMinhasCaronas(conn net.Conn, scannerRede *bufio.Scanner, token string) {
+	req := protocolo.Requisicao{
+		Acao:  protocolo.AcaoListarCaronas,
+		Token: token,
+	}
+
+	if err := protocolo.EnviarMensagem(conn, req); err != nil {
+		fmt.Printf("[ERRO] Falha ao buscar caronas: %v\n", err)
+		return
+	}
+
+	var resp protocolo.Resposta
+	if err := protocolo.LerMensagem(scannerRede, &resp); err != nil {
+		fmt.Printf("[ERRO] Falha ao ler resposta: %v\n", err)
+		return
+	}
+
+	if resp.Status != protocolo.StatusOK || len(resp.Caronas) == 0 {
+		fmt.Println("[INFO] Voce nao possui caronas ativas publicadas.")
+		return
+	}
+
+	fmt.Println("\n====================================================")
+	fmt.Println("           MINHAS CARONAS PUBLICADAS")
+	fmt.Println("====================================================")
+
+	for _, c := range resp.Caronas {
+		fmt.Printf("\n🚘 Carona ID: %s | Data: %s | Horario: %s -> %s\n", c.CaronaID, c.Data, c.Horario, c.HorarioChegada)
+		fmt.Printf("   Rota: %v | Capacidade: %d assentos | Preco/Trecho: R$ %.2f\n", c.Rota, c.Assentos, c.PrecoPorTrecho)
+		fmt.Println("   Ocupacao por trecho:")
+		for _, t := range c.Trechos {
+			passStr := "nenhum passageiro"
+			if len(t.Passageiros) > 0 {
+				passStr = strings.Join(t.Passageiros, ", ")
+			}
+			fmt.Printf("      - Sub-trecho [%s]: %d vagas livres | Passageiros: %s\n", t.Trecho, t.VagasLivres, passStr)
+		}
+	}
+}
+
+func cancelarCarona(conn net.Conn, scannerRede, scannerTeclado *bufio.Scanner, token string) {
+	listarMinhasCaronas(conn, scannerRede, token)
+
+	fmt.Print("\nDigite o ID da carona que deseja cancelar (ex: c-1) ou pressione Enter para voltar: ")
+	id := lerLinha(scannerTeclado)
+	if id == "" {
+		return
+	}
+
+	req := protocolo.Requisicao{
+		Acao:     protocolo.AcaoCancelarCarona,
+		Token:    token,
+		CaronaID: id,
+	}
+
+	if err := protocolo.EnviarMensagem(conn, req); err != nil {
+		fmt.Printf("[ERRO] Falha ao enviar cancelamento: %v\n", err)
+		return
+	}
+
+	var resp protocolo.Resposta
+	if err := protocolo.LerMensagem(scannerRede, &resp); err != nil {
+		fmt.Printf("[ERRO] Falha ao ler resposta: %v\n", err)
+		return
+	}
+
+	if resp.Status == protocolo.StatusOK {
+		fmt.Printf("\n[SUCESSO] %s\n", resp.Mensagem)
 	} else {
 		fmt.Printf("\n[ERRO] %s\n", resp.Erro)
 	}
