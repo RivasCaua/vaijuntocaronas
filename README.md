@@ -176,14 +176,24 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 
 ---
 
-### Opção B: Executando via Docker Compose
+### Opção B: Executando via Docker Compose (Containers Individuais)
 
-1. **Subir apenas o Servidor:**
+1. **Subir o Servidor Central:**
    ```bash
    docker-compose up --build servidor
    ```
 
-2. **Rodar o Teste de Carga via Docker:**
+2. **Rodar o Cliente Motorista (Interativo):**
+   ```bash
+   docker-compose run --rm motorista
+   ```
+
+3. **Rodar o Cliente Passageiro (Interativo):**
+   ```bash
+   docker-compose run --rm passageiro
+   ```
+
+4. **Rodar o Teste de Carga e Auditoria:**
    ```bash
    docker-compose --profile teste up --build
    ```

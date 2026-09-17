@@ -10,6 +10,32 @@ services:
       - "8080:8080"
     restart: unless-stopped
 
+  motorista:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_motorista
+    command: ["/app/bin/motorista", "-servidor", "servidor:8080"]
+    stdin_open: true
+    tty: true
+    depends_on:
+      - servidor
+    profiles:
+      - clientes
+
+  passageiro:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_passageiro
+    command: ["/app/bin/passageiro", "-servidor", "servidor:8080"]
+    stdin_open: true
+    tty: true
+    depends_on:
+      - servidor
+    profiles:
+      - clientes
+
   teste_carga:
     build:
       context: .
