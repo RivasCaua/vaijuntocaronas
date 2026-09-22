@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 
@@ -88,6 +89,7 @@ func tratarCliente(conn net.Conn, gerenciador *estado.GerenciadorEstado, idClien
 }
 
 func processarRequisicao(req protocolo.Requisicao, gerenciador *estado.GerenciadorEstado, idCliente int64) protocolo.Resposta {
+	req.Acao = strings.ToUpper(strings.TrimSpace(req.Acao))
 	log.Printf("[REQUISICAO] Cliente #%d | Acao: '%s' | Usuario: '%s'", idCliente, req.Acao, req.Usuario)
 
 	switch req.Acao {
