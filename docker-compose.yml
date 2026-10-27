@@ -1,25 +1,98 @@
 version: '3.8'
 
+# ---------------------------------------------------------------------------
+# Consorcio VaiJunto: 3 empresas de transporte independentes, cada uma rodando
+# sua PROPRIA instancia do servidor (mesmo binario, identidades diferentes),
+# com seu proprio Write-Ahead Log persistido em volume (sobrevive a reinicios
+# e quedas do container) e cientes umas das outras via a flag -membros, para
+# que o listener REST de cada instancia possa localizar as parceiras.
+#
+# Topologia (reflete as regioes ja usadas em pkg/consorcio/modelo.go):
+#   nodo-salvador   -> RMS              (porta cliente 8081 / porta rest 9091)
+#   nodo-feira      -> Portal do Sertão (porta cliente 8082 / porta rest 9092)
+#   nodo-reconcavo  -> Recôncavo        (porta cliente 8083 / porta rest 9093)
+# ---------------------------------------------------------------------------
+
 services:
-  servidor:
+  nodo-salvador:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: vaijunto_servidor
+    container_name: vaijunto_nodo_salvador
+    hostname: nodo-salvador
+    command:
+      - "/app/bin/servidor"
+      - "-empresa-id=nodo-salvador"
+      - "-regiao=RMS"
+      - "-endereco=nodo-salvador"
+      - "-porta=8080"
+      - "-porta-rest=9090"
+      - "-wal=/app/dados/nodo-salvador.wal"
+      - "-membros=nodo-feira@nodo-feira:9090,nodo-reconcavo@nodo-reconcavo:9090"
     ports:
-      - "8080:8080"
+      - "8081:8080"
+      - "9091:9090"
+    volumes:
+      - wal_nodo_salvador:/app/dados
     restart: unless-stopped
 
+  nodo-feira:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_nodo_feira
+    hostname: nodo-feira
+    command:
+      - "/app/bin/servidor"
+      - "-empresa-id=nodo-feira"
+      - "-regiao=Portal do Sertão"
+      - "-endereco=nodo-feira"
+      - "-porta=8080"
+      - "-porta-rest=9090"
+      - "-wal=/app/dados/nodo-feira.wal"
+      - "-membros=nodo-salvador@nodo-salvador:9090,nodo-reconcavo@nodo-reconcavo:9090"
+    ports:
+      - "8082:8080"
+      - "9092:9090"
+    volumes:
+      - wal_nodo_feira:/app/dados
+    restart: unless-stopped
+
+  nodo-reconcavo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_nodo_reconcavo
+    hostname: nodo-reconcavo
+    command:
+      - "/app/bin/servidor"
+      - "-empresa-id=nodo-reconcavo"
+      - "-regiao=Recôncavo"
+      - "-endereco=nodo-reconcavo"
+      - "-porta=8080"
+      - "-porta-rest=9090"
+      - "-wal=/app/dados/nodo-reconcavo.wal"
+      - "-membros=nodo-salvador@nodo-salvador:9090,nodo-feira@nodo-feira:9090"
+    ports:
+      - "8083:8080"
+      - "9093:9090"
+    volumes:
+      - wal_nodo_reconcavo:/app/dados
+    restart: unless-stopped
+
+  # Clientes interativos (TTY). Por padrao conectam a nodo-salvador; para falar
+  # com outra empresa do consorcio, sobrescreva o comando, ex:
+  #   docker compose run --rm motorista -servidor nodo-feira:8080
   motorista:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: vaijunto_motorista
-    command: ["/app/bin/motorista", "-servidor", "servidor:8080"]
+    command: ["/app/bin/motorista", "-servidor", "nodo-salvador:8080"]
     stdin_open: true
     tty: true
     depends_on:
-      - servidor
+      - nodo-salvador
     profiles:
       - clientes
 
@@ -28,11 +101,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: vaijunto_passageiro
-    command: ["/app/bin/passageiro", "-servidor", "servidor:8080"]
+    command: ["/app/bin/passageiro", "-servidor", "nodo-salvador:8080"]
     stdin_open: true
     tty: true
     depends_on:
-      - servidor
+      - nodo-salvador
     profiles:
       - clientes
 
@@ -41,8 +114,33 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: vaijunto_teste_carga
-    command: ["/app/bin/teste_carga", "-servidor", "servidor:8080", "-clientes", "30", "-vagas", "5"]
+    command: ["/app/bin/teste_carga", "-servidor", "nodo-salvador:8080", "-clientes", "30", "-vagas", "5"]
     depends_on:
-      - servidor
+      - nodo-salvador
     profiles:
       - teste
+
+  # Simulador de carga sustentada contra o consórcio INTEIRO (as 3 empresas), via rede interna do
+  # compose - exercita busca/reserva/cancelamento cross-empresa descrito em docs/api_consorcio.md.
+  simulador:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vaijunto_simulador
+    command:
+      - "/app/bin/simulador"
+      - "-servidores=nodo-salvador:8080,nodo-feira:8080,nodo-reconcavo:8080"
+      - "-passageiros=80"
+      - "-motoristas=10"
+      - "-duracao=30s"
+    depends_on:
+      - nodo-salvador
+      - nodo-feira
+      - nodo-reconcavo
+    profiles:
+      - teste
+
+volumes:
+  wal_nodo_salvador:
+  wal_nodo_feira:
+  wal_nodo_reconcavo:
