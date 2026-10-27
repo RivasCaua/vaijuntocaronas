@@ -1,55 +1,80 @@
-# VaiJunto - Central de Caronas Compartilhadas
+# VaiJunto - Consórcio de Caronas Compartilhadas
 
-> **TEC502 - Concorrência e Conectividade (Problema 1)**  
-> Sistema de intermediação de caronas intermunicipais com controle estrito de concorrência, comunicação TCP pura e prevenção absoluta de overbooking.
+> **TEC502 - Concorrência e Conectividade (Problema 1)**
+> Consórcio de empresas de transporte intermunicipal independentes, cada uma operando seu próprio
+> servidor com controle estrito de concorrência, comunicação TCP pura com clientes, replicação via
+> Write-Ahead Log e coordenação distribuída (Scatter-Gather, Two-Phase Commit, heartbeat) via REST
+> entre empresas.
 
 ---
 
 ## Visão Geral do Projeto
 
-O **VaiJunto** é um sistema centralizado desenvolvido em **Go (Golang)** focado na gestão de caronas intermunicipais entre Salvador, Feira de Santana e região (Portal do Sertão, Recôncavo e RMS).
+O **VaiJunto** nasceu como um servidor centralizado em **Go (Golang)** para gestão de caronas
+intermunicipais entre Salvador, Feira de Santana e região (Portal do Sertão, Recôncavo e RMS), e
+evoluiu para um **consórcio multi-empresa**: cada empresa de transporte roda sua própria instância
+independente do mesmo binário (`cmd/servidor`), com seu próprio estado em memória e seu próprio
+Write-Ahead Log em disco, cooperando com as demais via uma API REST inter-servidores
+(`pkg/consorcio`) para federar buscas de itinerários e coordenar reservas que atravessam mais de uma
+empresa, sem jamais permitir overbooking - nem dentro de uma empresa, nem entre elas.
 
-O sistema lida com o desafio de múltiplos usuários (motoristas e passageiros) realizando acessos simultâneos — cadastrando usuários, publicando caronas, consultando itinerários e efetuando reservas concorrentes.
+O sistema lida com múltiplos usuários (motoristas e passageiros) realizando acessos simultâneos -
+cadastrando-se, publicando caronas, consultando itinerários e efetuando reservas concorrentes - e
+com a possibilidade real de uma dessas empresas cair e se recuperar sem perder dados nem corromper o
+estado das demais.
+
+Para a especificação completa da API REST do consórcio (endpoints, DTOs, diagramas de sequência dos
+fluxos distribuídos) veja **[`docs/api_consorcio.md`](docs/api_consorcio.md)**.
 
 ---
 
 ## Visão Detalhada da Arquitetura do Sistema
 
-A arquitetura do **VaiJunto** foi projetada visando alto desempenho, desacoplamento de camadas, conectividade de baixo nível e controle absoluto de concorrência em memória.
+Cada empresa do consórcio expõe **dois listeners simultâneos**: um TCP puro para seus próprios
+motoristas/passageiros, e um REST para conversar com as empresas parceiras.
 
-### Diagrama da Arquitetura de Componentes
+### Diagrama da Arquitetura do Consórcio
 
 ```text
  ┌──────────────────────┐         ┌──────────────────────┐
  │  Cliente Motorista   │         │  Cliente Passageiro  │
  │   (cmd/motorista)    │         │   (cmd/passageiro)   │
  └──────────┬───────────┘         └──────────┬───────────┘
-            │                                │
-            │ Conexão TCP                    │ Conexão TCP
-            │ (JSON Stream + '\n')           │ (JSON Stream + '\n')
+            │ TCP + JSON ('\n')              │ TCP + JSON ('\n')
             ▼                                ▼
  ┌───────────────────────────────────────────────────────┐
- │               Servidor Central (cmd/servidor)          │
- │                                                       │
- │  ┌─────────────────────────────────────────────────┐  │
- │  │      Listener TCP (net.Listen - Porta 8080)     │  │
- │  └────────────────────────┬────────────────────────┘  │
- │                           │                           │
- │                           ▼ Dispara per-connection    │
- │  ┌─────────────────────────────────────────────────┐  │
- │  │        Goroutine Cliente Worker (goroutine)     │  │
- │  └────────────────────────┬────────────────────────┘  │
- │                           │                           │
- └───────────────────────────┼───────────────────────────┘
-                             │
-                             ▼ Invoca Métodos do Domínio
+ │        nodo-salvador (empresa RMS) - cmd/servidor      │
+ │  ┌─────────────┐  ┌─────────────┐  ┌────────────────┐ │
+ │  │ Listener TCP│  │Listener REST│  │ CoordenadorDist.│ │
+ │  │   :8080     │  │   :9090     │  │ (2PC/Scatter/HB)│ │
+ │  └──────┬──────┘  └──────┬──────┘  └────────┬───────┘ │
+ │         └────────────────┴──────────────────┘         │
+ │                          ▼                             │
+ │         GerenciadorEstado (sync.RWMutex)                │
+ │         usuários · caronas · reservas · holds           │
+ │                          │                              │
+ │                          ▼                              │
+ │              WAL (append-only + fsync + CRC32)          │
+ └───────────────────────────┬───────────────────────────┘
+                             │ REST: heartbeat, scatter-gather,
+                             │ 2PC (prepare/commit/abort), sync WAL
+             ┌───────────────┼────────────────┐
+             ▼                                ▼
+ ┌─────────────────────┐          ┌─────────────────────┐
+ │ nodo-feira (Portal   │◄────────►│ nodo-reconcavo       │
+ │ do Sertão)           │  REST    │ (Recôncavo)          │
+ │ mesma estrutura ↑    │          │ mesma estrutura ↑    │
+ └─────────────────────┘          └─────────────────────┘
+```
+
+Dentro de cada nó, o modelo de concorrência do servidor original permanece intacto:
+
+```text
  ┌───────────────────────────────────────────────────────┐
  │         Gerenciador de Estado (pkg/estado)            │
- │                                                       │
  │  ┌─────────────────────────────────────────────────┐  │
  │  │     Exclusão Mútua: sync.RWMutex (Lock/RLock)   │  │
  │  └────────────────────────┬────────────────────────┘  │
- │                           │                           │
  │        ┌──────────────────┼──────────────────┐        │
  │        ▼                  ▼                  ▼        │
  │  ┌───────────┐      ┌───────────┐      ┌───────────┐  │
@@ -63,43 +88,92 @@ A arquitetura do **VaiJunto** foi projetada visando alto desempenho, desacoplame
 
 ## Decisões de Arquitetura de Software & Engenharia
 
-### 1. Camada de Rede: Sockets TCP Nativo vs HTTP/REST
-* **Escolha:** Utilização de sockets **TCP puros** (`net.Conn`) em substituição a HTTP/REST.
-* **Justificativa Técnica:** O protocolo HTTP impõe alto *overhead* (cabeçalhos verbosos, handshakes repetidos e overhead de parse). O TCP direto garante menor latência, respostas imediatas e consumo mínimo de memória no servidor.
-* **Resolução do Problema de TCP Framing:** O TCP é um protocolo orientado a stream de bytes e não a mensagens separadas. Para evitar fragmentação ou junção de pacotes (*framing issue*), implementamos em `pkg/protocolo/io.go` uma delimitação por **Line-Feed (`\n`)**.
-* **Stream Buffer Optimizations:** A leitura é realizada utilizando `bufio.Scanner` com buffer configurável de 64KB até 1MB por pacote, evitando estouro de memória em buscas extensas.
+### 1. Camada de Rede com Clientes: Sockets TCP Nativo vs HTTP/REST
+* **Escolha:** Sockets **TCP puros** (`net.Conn`) para motoristas/passageiros, reservando HTTP/REST
+  apenas para a comunicação **entre empresas** do consórcio (onde o overhead de um protocolo
+  padronizado e auto-descritivo compensa, por ser tráfego inter-serviço, não de alta frequência por
+  cliente final).
+* **Framing TCP:** `pkg/protocolo/io.go` delimita mensagens por **Line-Feed (`\n`)**, lidas com
+  `bufio.Scanner` (buffer de 64KB a 1MB).
 
-### 2. Camada de Concorrência: Modelo Worker Goroutines + `sync.RWMutex`
-* **Thread-per-Connection:** Para cada cliente aceito no socket (`listener.Accept()`), o servidor dispara uma `goroutine` independente. Isso permite escalabilidade para milhares de conexões simultâneas com baixo uso de RAM (uma goroutine consome ~2KB inicial).
-* **Padrão Leitor-Escritor (`sync.RWMutex`):**
-  * **Trava de Leitura (`RLock`):** Utilizada em operações read-only como `BuscarItinerarios` e `ValidarToken`. Permite que múltiplos passageiros consultem o inventário simultaneamente sem causar gargalos (*zero-contention reads*).
-  * **Trava de Escrita (`Lock`):** Utilizada em operações de mutação de estado como `ReservarItinerario`, `PublicarCarona`, `CadastrarUsuario` e `CancelarReserva`.
+### 2. Camada de Concorrência Local: Goroutines + `sync.RWMutex`
+* **Thread-per-Connection:** cada cliente aceito dispara uma `goroutine` independente.
+* **Leitor-Escritor:** `RLock` em `BuscarItinerarios`/`ValidarToken`; `Lock` em `ReservarItinerario`,
+  `PublicarCarona`, `CadastrarUsuario`, `CancelarReserva` e nas operações de `Hold` (Fase 1/2 do 2PC).
 
-### 3. Algoritmo de Reserva Atômica (**Check-Then-Act em 2 Fases**)
-Para erradicar a ocorrência de **Overbooking** sob concorrência massiva, a reserva de viagens é tratada de forma transacional e atômica em memória:
-* **Fase 1 (Check):** Sob `Lock()`, o algoritmo itera sobre todos os sub-trechos da rota solicitada. Se qualquer segmento possuir `vagas <= 0` ou carona inativa, a transação é abortada e nada é alterado.
-* **Fase 2 (Act):** Somente se **100% dos trechos forem validados com sucesso**, o sistema decrementa o inventário de vagas (`VagasPorTrecho--`) e gera o registro da reserva de forma indivisível.
+### 3. Algoritmo de Reserva Atômica: Two-Phase Commit com Leases (Holds)
+Toda reserva - local ou entre empresas - passa pelo mesmo protocolo de duas fases
+(`CoordenadorDistribuido.ExecutarReserva2PC`):
+* **Fase 1 (Prepare):** para cada sub-trecho, sob `Lock()`, verifica disponibilidade e, se livre,
+  debita provisoriamente a vaga criando um `Hold` com TTL (lease). Se dois passageiros disputam a
+  última vaga ao mesmo tempo, o desempate é feito pelo **relógio de Lamport** (menor timestamp lógico
+  vence; empate quebrado pelo ID do nó).
+* **Fase 2 (Commit/Abort):** só confirmada se **todos** os participantes (locais e remotos)
+  votarem SIM; qualquer recusa ou falha de rede aborta a transação inteira e **compensa**
+  automaticamente devolvendo as vagas já debitadas nos participantes que haviam votado SIM - sem
+  vazamento de hold, mesmo com um nó caindo no meio da transação (validado em `cmd/teste_falhas`).
+* Participantes inteiramente locais resolvem as duas fases em memória, sem round-trip de rede; apenas
+  trechos de uma empresa parceira acionam o REST (`/api/v1/2pc/{prepare,commit,abort}`).
 
-### 4. Camada de Domínio: Desmembramento de Rotas e Grafo Regional
-* **Modelo de Sub-Trechos Dinâmicos:** Em vez de alocar assentos na carona global, a estrutura de dados [Carona](file:///home/rivasuzeda/Faculdade/MI%20-%20Concorr%C3%AAncia%20e%20conectividade/pkg/estado/carona.go) mapeia a ocupação através de `VagasPorTrecho map[string]int` e `PassageirosPorTrecho map[string][]string`.
-* **Benefício de Negócio:** Maximiza a taxa de ocupação do veículo. O mesmo assento físico pode ser reutilizado por passageiros diferentes em segmentos distintos da mesma rota (ex: Passageiro A no trecho *Salvador->Amélia* e Passageiro B no trecho *Amélia->Feira*).
-* **Catálogo de Cidades Regionais:** Restringe a validação e normalização de rotas às 12 cidades oficiais do Portal do Sertão, Recôncavo e RMS, prevenindo dados inválidos no sistema.
+### 4. Durabilidade: Write-Ahead Log com `fsync` e CRC32
+* Toda mutação de domínio confirmada ao cliente só é confirmada **depois** de persistida com
+  `fsync` no WAL local (`pkg/consorcio/wal.go`) - nenhuma resposta de sucesso sai sem durabilidade
+  garantida contra queda do processo.
+* Cada linha do log carrega um checksum CRC32; corrupção de disco é detectada explicitamente no boot.
+* **Recuperação pós-queda:** ao reiniciar, o servidor relê o WAL do início, reaplica cada operação
+  (idempotente) na ordem exata do log antes de abrir qualquer porta a clientes, e retoma o relógio de
+  Lamport do maior timestamp já observado - nunca "volta no tempo" lógico após um crash.
+* Fases transitórias do 2PC (`2PC_PREPARE`, `2PC_ABORT`) são deliberadamente descartadas no replay:
+  um prepare sem commit correspondente vira aborto implícito (política de segurança contra reservas
+  "fantasma").
+
+### 5. Coordenação Distribuída entre Empresas (`pkg/consorcio`)
+* **Relógio de Lamport:** cada nó mantém um relógio lógico (`Tick`/`Atualizar`) usado para ordenar
+  eventos e desempatar concorrência entre empresas distintas.
+* **Busca combinada entre empresas:** o inventário bruto de sub-trechos do estado local e de todos os
+  parceiros é coletado em paralelo (Scatter) e montado em um grafo de cidades, sobre o qual uma busca
+  em profundidade encontra itinerários que **combinam caronas de empresas diferentes** (ex.: Salvador
+  → Feira numa empresa, Feira → Vitória da Conquista noutra, Vitória da Conquista → Montes Claros numa
+  terceira) - tolerando falha parcial de qualquer nó indisponível.
+* **Heartbeat automático:** cada nó envia heartbeats periódicos a seus parceiros (`-heartbeat-
+  intervalo` em `cmd/servidor`, padrão 2s) e marca o status de cada um como `ONLINE`, `SUSPEITO`
+  (1 falha) ou `OFFLINE` (3 falhas), refletido em `/api/v1/cluster/info`.
+* Ver **[`docs/api_consorcio.md`](docs/api_consorcio.md)** para a especificação completa dos
+  endpoints REST e diagramas de sequência de cada fluxo.
+
+### 6. Camada de Domínio: Desmembramento de Rotas e Grafo Regional
+* **Sub-Trechos Dinâmicos:** a estrutura [Carona](pkg/estado/carona.go) mapeia ocupação por
+  `VagasPorTrecho map[string]int`, permitindo que o mesmo assento físico seja reaproveitado por
+  passageiros diferentes em segmentos distintos da mesma rota.
+* **Catálogo de Cidades Regionais:** 12 cidades oficiais do Portal do Sertão, Recôncavo e RMS.
 
 ---
 
 ## Pacotes da Solução (`pkg/` e `cmd/`)
 
-A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project Layout*), dividida nos seguintes pacotes:
-
 ### 1. Pacotes da Aplicação Executável (`cmd/`)
-* `cmd/servidor`: Ponto de entrada do Servidor Central TCP (:8080). Gerencia o listener de rede, encerramento gracioso (*graceful shutdown*) e despacho de goroutines por cliente.
-* `cmd/motorista`: Cliente CLI interativo para motoristas (cadastrar, autenticar, publicar carona passo a passo estilo Uber, listar e cancelar caronas).
-* `cmd/passageiro`: Cliente CLI interativo para passageiros (cadastrar, autenticar, buscar itinerários regionais, realizar reserva atômica, consultar histórico e cancelar reserva).
-* `cmd/teste_carga`: Robô simulador de alta concorrência e auditor de condições de corrida (*race conditions*).
+* `cmd/servidor`: Ponto de entrada de uma instância/empresa do consórcio. Abre o listener TCP de
+  clientes, o listener REST inter-empresas, a rotina automática de heartbeat e executa a recuperação
+  via WAL no boot.
+* `cmd/motorista`: Cliente CLI interativo para motoristas.
+* `cmd/passageiro`: Cliente CLI interativo para passageiros.
+* `cmd/teste_carga`: Robô de auditoria de condição de corrida - dispara N clientes contra UMA única
+  carona com poucas vagas e confirma zero overbooking.
+* `cmd/simulador`: Simulador autônomo (headless) de carga sustentada - dezenas de passageiros
+  virtuais buscando/reservando/cancelando continuamente, com relatório de throughput e latência
+  (p50/p95/p99) por operação.
+* `cmd/teste_falhas`: Robô de caos - sobe 3 processos reais do consórcio, mata um abruptamente
+  (`SIGKILL`) em pleno funcionamento e audita detecção de falha, isolamento dos sobreviventes,
+  compensação do 2PC e recuperação via WAL.
 
 ### 2. Pacotes de Biblioteca e Domínio (`pkg/`)
-* `pkg/estado`: Gerenciador de estado em memória thread-safe (`GerenciadorEstado`). Responsável pela exclusão mútua (`sync.RWMutex`), mapa de assentos por sub-trechos, tokens de sessão e algoritmo de reserva atômica (**Check-Then-Act**).
-* `pkg/protocolo`: Definição de mensagens JSON da camada de aplicação (`Requisicao`, `Resposta`, DTOs), constantes de ações e utilitários de I/O em sockets TCP (`EnviarMensagem`, `LerMensagem` com `bufio.Scanner` delimitado por `\n`).
+* `pkg/estado`: Gerenciador de estado em memória thread-safe. Usuários, caronas, reservas, holds
+  (leases do 2PC), algoritmo de reserva atômica, persistência/recuperação de domínio.
+* `pkg/protocolo`: Mensagens JSON da camada de aplicação TCP (`Requisicao`, `Resposta`, DTOs),
+  relógio de Lamport e utilitários de I/O em sockets.
+* `pkg/consorcio`: Camada de coordenação distribuída entre empresas - `CoordenadorDistribuido`
+  (Scatter-Gather, 2PC, heartbeat), `ServidorREST` (API HTTP inter-nós), `ClienteREST`, `WAL` e os
+  DTOs de rede do consórcio. Ver `docs/api_consorcio.md` para a especificação completa.
 
 ---
 
@@ -107,23 +181,38 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 
 ```text
 .
-├── Dockerfile                  # Containerização multi-stage do servidor e ambiente
-├── docker-compose.yml          # Orquestração dos containers Docker
+├── Dockerfile                  # Containerização multi-stage de todos os binarios
+├── docker-compose.yml          # Topologia de 3 empresas do consorcio + clientes + testes
 ├── go.mod                      # Módulo Go do projeto
+├── docs/
+│   └── api_consorcio.md        # Especificação da API REST, DTOs e diagramas de sequência
 ├── cmd/
-│   ├── servidor/               # Servidor Central TCP (:8080)
-│   ├── motorista/              # Cliente CLI para Motoristas
-│   ├── passageiro/             # Cliente CLI para Passageiros
-│   └── teste_carga/            # Simulator/Auditor de Concorrência Massiva
+│   ├── servidor/                # Servidor de uma empresa (TCP + REST + WAL + coordenador)
+│   ├── motorista/                # Cliente CLI para Motoristas
+│   ├── passageiro/               # Cliente CLI para Passageiros
+│   ├── teste_carga/              # Auditor de condição de corrida (overbooking)
+│   ├── simulador/                 # Simulador autônomo de carga sustentada
+│   └── teste_falhas/              # Robô de caos / queda de nós
 └── pkg/
     ├── estado/                 # Regras de negócio e gerenciador de estado thread-safe
     │   ├── carona.go           # Structs de Carona e Reserva
     │   ├── cidades.go          # Validação e catálogo regional de 12 cidades
     │   ├── gerenciador.go      # Gerenciador de estado com Mutex (Lock/RLock)
+    │   ├── hold.go             # Leases/Holds do Two-Phase Commit
+    │   ├── persistencia.go     # Snapshot JSON de estado (uso auxiliar/depuração)
+    │   ├── recuperacao.go      # Replay idempotente de registros do WAL
     │   └── usuario.go          # Structs de Usuário e Sessão
-    └── protocolo/              # DTOs, constantes e comunicação TCP/JSON
-        ├── io.go               # Escrita/Leitura de sockets TCP delimitados por \n
-        └── mensagens.go        # Structs Requisicao e Resposta JSON
+    ├── protocolo/              # DTOs, constantes e comunicação TCP/JSON
+    │   ├── io.go               # Escrita/Leitura de sockets TCP delimitados por \n
+    │   ├── lamport.go          # Timestamp e comparação de relógio lógico
+    │   └── mensagens.go        # Structs Requisicao e Resposta JSON
+    └── consorcio/              # Coordenação distribuída entre empresas
+        ├── modelo.go           # DTOs de rede do consórcio (NodoDTO, HeartbeatDTO, 2PC, ...)
+        ├── lamport.go          # Relógio lógico por nó (RelogioLamport)
+        ├── wal.go              # Write-Ahead Log (append-only, fsync, CRC32)
+        ├── cliente_rest.go     # Cliente HTTP resiliente para chamadas inter-nós
+        ├── servidor_rest.go    # Servidor HTTP inter-nós (handlers de todos os endpoints)
+        └── coordenador.go      # Scatter-Gather, Two-Phase Commit, heartbeat automático
 ```
 
 ---
@@ -145,85 +234,135 @@ A aplicação segue o padrão oficial do ecossistema Go (*Standard Go Project La
 3. **Reservar:** Selecione o itinerário desejado para efetuar a reserva atômica.
 4. **Listar e Cancelar Reservas:** Consulte seu histórico de reservas ou cancele uma reserva devolvendo as vagas ao inventário.
 
+> O passageiro conecta-se a uma única empresa, mas a busca atravessa o consórcio inteiro: itinerários
+> podem combinar trechos de caronas publicadas em empresas diferentes (`CoordenadorDistribuido.
+> BuscarItinerariosCombinados`), reservados atomicamente via 2PC - o cenário central do consórcio.
+> Listar/cancelar uma reserva que envolve mais de uma empresa é a única limitação conhecida nesse
+> fluxo; ver seção 10 de `docs/api_consorcio.md`.
+
 ---
 
 ## Como Executar
 
 ### Pré-requisitos
-* **Go 1.20+** instalado OU **Docker / Docker Compose**.
+* **Go 1.22+** instalado OU **Docker / Docker Compose**.
 
-### Opção A: Executando Localmente (Go)
+### Opção A: Executando Localmente (Go) - uma única empresa
 
-1. **Inicie o Servidor Central:**
-   ```bash
-   go run ./cmd/servidor -porta 8080
-   ```
+```bash
+go run ./cmd/servidor -empresa-id=nodo-salvador -porta 8080 -porta-rest 9090
+go run ./cmd/motorista -servidor localhost:8080
+go run ./cmd/passageiro -servidor localhost:8080
+```
 
-2. **Em um novo terminal, inicie o Cliente Motorista:**
-   ```bash
-   go run ./cmd/motorista -servidor localhost:8080
-   ```
+### Opção B: Executando Localmente (Go) - consórcio completo de 3 empresas
 
-3. **Em outro terminal, inicie o Cliente Passageiro:**
-   ```bash
-   go run ./cmd/passageiro -servidor localhost:8080
-   ```
+Em três terminais separados (cada empresa conhece as outras duas via `-membros`):
 
-4. **Executar o Teste de Carga e Concorrência Massiva:**
-   ```bash
-   go run ./cmd/teste_carga -servidor localhost:8080 -clientes 30 -vagas 5
-   ```
+```bash
+go run ./cmd/servidor -empresa-id=nodo-salvador -regiao=RMS \
+  -porta=8081 -porta-rest=9091 -wal=dados/nodo-salvador.wal \
+  -membros=nodo-feira@localhost:9092,nodo-reconcavo@localhost:9093
+
+go run ./cmd/servidor -empresa-id=nodo-feira -regiao="Portal do Sertão" \
+  -porta=8082 -porta-rest=9092 -wal=dados/nodo-feira.wal \
+  -membros=nodo-salvador@localhost:9091,nodo-reconcavo@localhost:9093
+
+go run ./cmd/servidor -empresa-id=nodo-reconcavo -regiao="Recôncavo" \
+  -porta=8083 -porta-rest=9093 -wal=dados/nodo-reconcavo.wal \
+  -membros=nodo-salvador@localhost:9091,nodo-feira@localhost:9092
+```
+
+Confirme que o consórcio está de pé consultando a topologia vista por qualquer um dos nós:
+
+```bash
+curl http://localhost:9091/api/v1/cluster/info
+```
+
+### Opção C: Validações automatizadas
+
+```bash
+# Auditoria de overbooking (uma carona, muitos clientes disputando poucas vagas)
+go run ./cmd/teste_carga -servidor localhost:8081 -clientes 30 -vagas 5
+
+# Simulador de carga sustentada (vários passageiros autônomos por um período)
+go run ./cmd/simulador -servidores=localhost:8081,localhost:8082,localhost:8083 \
+  -passageiros=80 -motoristas=10 -duracao=30s
+
+# Robô de caos (sobe 3 nós sozinho, mata um com SIGKILL, audita recuperação)
+go run ./cmd/teste_falhas -no-alvo=nodo-feira -tempo-queda=5s
+```
+
+Os resultados reais dessas três ferramentas, incluindo a auditoria de compensação do 2PC sob falha
+de um nó e a verificação de integridade pós-recuperação via WAL, estão documentados com números em
+**[`docs/api_consorcio.md`](docs/api_consorcio.md#7-ferramentas-de-validação-bloco-5)**.
 
 ---
 
-### Opção B: Executando via Docker Compose (Containers Individuais)
+### Opção D: Executando via Docker Compose (consórcio completo containerizado)
 
-1. **Subir o Servidor Central:**
-   ```bash
-   docker-compose up --build servidor
-   ```
+```bash
+# Sobe as 3 empresas do consórcio
+docker-compose up --build nodo-salvador nodo-feira nodo-reconcavo
 
-2. **Rodar o Cliente Motorista (Interativo):**
-   ```bash
-   docker-compose run --rm motorista
-   ```
+# Clientes interativos
+docker-compose run --rm motorista
+docker-compose run --rm passageiro
 
-3. **Rodar o Cliente Passageiro (Interativo):**
-   ```bash
-   docker-compose run --rm passageiro
-   ```
-
-4. **Rodar o Teste de Carga e Auditoria:**
-   ```bash
-   docker-compose --profile teste up --build
-   ```
+# Teste de carga
+docker-compose --profile teste up --build
+```
 
 ---
 
 ## Dockerfile e Configuração de Ambiente
 
 O projeto utiliza **Multi-Stage Build** no `Dockerfile`:
-1. **Estágio 1 (Builder):** Utiliza a imagem oficial `golang:1.22-alpine`, configura o diretório `/app`, copia os módulos e compila estaticamente todos os executáveis Go sem dependências externas (`CGO_ENABLED=0 GOOS=linux`).
-2. **Estágio 2 (Runtime):** Utiliza a imagem minimalista `alpine:latest`, expõe a porta TCP `8080` e executa o binário estático do servidor `/app/bin/servidor`.
+1. **Estágio 1 (Builder):** imagem oficial `golang:1.22-alpine`, compila estaticamente todos os
+   executáveis Go (`servidor`, `motorista`, `passageiro`, `teste_carga`, `simulador`,
+   `teste_falhas`) sem dependências externas (`CGO_ENABLED=0 GOOS=linux`).
+2. **Estágio 2 (Runtime):** imagem minimalista `alpine:latest`, expõe as portas TCP e REST do
+   servidor e executa o binário solicitado via `docker-compose.yml`.
 
 ---
 
-## Teste de Carga e Auditoria de Concorrência
+## Testes Automatizados
 
-O módulo `cmd/teste_carga` simula o cenário crítico de **disputa simultânea por vagas**:
-* Publica uma carona de teste com número limitado de assentos (ex: 5 vagas).
-* Dispara `N` goroutines clientes (ex: 30 clientes) que tentam realizar o fluxo completo de cadastro, login, busca e reserva **exatamente no mesmo instante**.
-* Mede a latência e audita o resultado, garantindo que **exatamente 5 vagas são vendidas** e as outras **25 requisições são recusadas graciosamente**, confirmando a ausência de condições de corrida (*race conditions*).
+Além dos três robôs de validação de ponta a ponta descritos acima, o núcleo de domínio e a camada
+de consórcio têm suíte de testes unitários e de integração local:
+
+```bash
+go test ./...          # suíte completa
+go test -race ./...    # com detector de condições de corrida
+```
+
+Cobertura inclui: cadastro/autenticação, reserva atômica e cancelamento, expiração de holds,
+persistência e recuperação via WAL, relógio de Lamport, Scatter-Gather com tolerância a falha
+parcial, Two-Phase Commit (commit multi-nó, abort com compensação) e a rotina automática de
+heartbeat detectando a queda de um membro em tempo real.
 
 ---
 
 ## Guia de Apresentação (Roteiro de Fala para Avaliação)
 
-1. **Abertura & Contexto:** Apresente o **VaiJunto** como um servidor centralizado em Go que atende conexões TCP puras usando payloads JSON delimitados por `\n`.
-2. **Decisão de Negócio (Modelo de Sub-Trechos):** Mostre que rotas são fragmentadas (ex: `Salvador -> Amélia Rodrigues -> Feira de Santana`), alocando vagas por segmento (`VagasPorTrecho`).
-3. **Arquitetura de Concorrência (`Goroutines` + `sync.RWMutex`):** Explique o modelo *thread-per-connection* com goroutines e a divisão entre **Leitura Concorrente (`RLock`)** e **Escrita Exclusiva (`Lock`)**.
-4. **Algoritmo de Reserva Atômica (**Check-Then-Act**):** Explique que sob a trava de escrita, o sistema verifica a disponibilidade em todos os trechos (Fase 1: Check) antes de debitar as vagas (Fase 2: Act), garantindo **0% Overbooking**.
-5. **Demonstração Prática:** Execute o script de teste de carga em tempo real:
+1. **Abertura & Contexto:** Apresente o **VaiJunto** como um consórcio de empresas de transporte,
+   cada uma rodando seu próprio servidor Go, atendendo clientes via TCP puro e conversando entre si
+   via REST.
+2. **Decisão de Negócio (Modelo de Sub-Trechos):** Mostre que rotas são fragmentadas (ex:
+   `Salvador -> Amélia Rodrigues -> Feira de Santana`), alocando vagas por segmento.
+3. **Arquitetura de Concorrência Local (`Goroutines` + `sync.RWMutex`):** Thread-per-connection e a
+   divisão entre leitura concorrente e escrita exclusiva.
+4. **Two-Phase Commit com Compensação:** Explique as duas fases (Prepare com Hold/Lease, Commit ou
+   Abort com devolução automática de vagas), e como o desempate de concorrência usa o relógio de
+   Lamport em vez de tempo físico.
+5. **Durabilidade e Recuperação:** Mostre o WAL com `fsync` e CRC32, e como um nó reconstrói seu
+   estado inteiro ao reiniciar após uma queda.
+6. **Demonstração ao vivo - carga:**
    ```bash
-   go run ./cmd/teste_carga -servidor localhost:8080 -clientes 30 -vagas 5
+   go run ./cmd/teste_carga -servidor localhost:8081 -clientes 30 -vagas 5
    ```
+7. **Demonstração ao vivo - caos:**
+   ```bash
+   go run ./cmd/teste_falhas -no-alvo=nodo-feira -tempo-queda=5s
+   ```
+   Mostre o veredito final: zero perda de dados, zero overbooking, isolamento de falha confirmado.
