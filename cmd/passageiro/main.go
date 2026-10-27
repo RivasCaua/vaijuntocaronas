@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"vaijunto/pkg/protocolo"
 )
@@ -20,17 +21,17 @@ type SessaoCliente struct {
 }
 
 func main() {
-	enderecoServidor := flag.String("servidor", "localhost:8080", "Endereco do servidor central (IP:Porta)")
+	enderecoServidor := flag.String("servidor", "localhost:8080", "Endereco (IP:Porta) da empresa do consorcio a conectar, ex: nodo-salvador:8080")
 	flag.Parse()
 
 	fmt.Println("================================================================")
-	fmt.Println("VaiJunto - Modulo Passageiro (Feira de Santana & Salvador)")
-	fmt.Printf("Conectando ao servidor em: %s...\n", *enderecoServidor)
+	fmt.Println("VaiJunto - Modulo Passageiro (Consorcio Multi-Empresa)")
+	fmt.Printf("Conectando a empresa em: %s...\n", *enderecoServidor)
 	fmt.Println("================================================================")
 
-	conn, err := net.Dial("tcp", *enderecoServidor)
+	conn, err := conectarComRetentativas(*enderecoServidor, 5, 2*time.Second)
 	if err != nil {
-		fmt.Printf("[ERRO] Nao foi possivel conectar ao servidor em %s: %v\n", *enderecoServidor, err)
+		fmt.Printf("[ERRO] Nao foi possivel conectar a empresa em %s: %v\n", *enderecoServidor, err)
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -355,6 +356,25 @@ func login(conn net.Conn, scannerRede *bufio.Scanner, scannerTeclado *bufio.Scan
 
 	fmt.Printf("[ERRO] %s\n", resp.Erro)
 	return nil
+}
+
+// conectarComRetentativas tenta conectar a empresa algumas vezes com espera entre tentativas:
+// em um consorcio multi-instancia, o servidor-alvo pode ainda estar executando a recuperacao
+// via WAL (ou o container pode ainda estar subindo) no momento em que o cliente inicia.
+func conectarComRetentativas(endereco string, tentativas int, espera time.Duration) (net.Conn, error) {
+	var ultimoErro error
+	for i := 1; i <= tentativas; i++ {
+		conn, err := net.Dial("tcp", endereco)
+		if err == nil {
+			return conn, nil
+		}
+		ultimoErro = err
+		if i < tentativas {
+			fmt.Printf("[AVISO] Tentativa %d/%d de conexao falhou (%v). Tentando novamente em %s...\n", i, tentativas, err, espera)
+			time.Sleep(espera)
+		}
+	}
+	return nil, ultimoErro
 }
 
 func lerLinha(scanner *bufio.Scanner) string {
