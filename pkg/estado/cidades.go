@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-// CidadesRegionais limita o catálogo inicial para o Portal do Sertão, Recôncavo e RMS
+// CidadesRegionais limita o catálogo às cidades do Portal do Sertão, Recôncavo e RMS, mais os dois
+// destinos de longa distância (sudoeste da Bahia e norte de Minas Gerais) que motivam o próprio
+// consórcio: nenhuma empresa isolada atende Salvador -> Montes Claros sozinha, mas o consórcio sim,
+// combinando trechos de empresas diferentes em um único itinerário reservado atomicamente.
 var CidadesRegionais = []string{
 	"Salvador",
 	"Simões Filho",
@@ -19,6 +22,8 @@ var CidadesRegionais = []string{
 	"Alagoinhas",
 	"Cachoeira",
 	"Santo Antônio de Jesus",
+	"Vitória da Conquista",
+	"Montes Claros",
 }
 
 // ObterCidadesRegionais retorna a lista completa de cidades atendidas

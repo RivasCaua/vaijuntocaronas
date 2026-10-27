@@ -12,6 +12,9 @@ const (
 	AcaoCancelarReserva   = "CANCELAR_RESERVA"
 	AcaoCancelarCarona    = "CANCELAR_CARONA"
 	AcaoObterCidades      = "OBTER_CIDADES"
+	AcaoPrepararHold      = "PREPARAR_HOLD"
+	AcaoConfirmarHold     = "CONFIRMAR_HOLD"
+	AcaoAbortarHold       = "ABORTAR_HOLD"
 )
 
 const (
@@ -29,6 +32,7 @@ const (
 // ItemTrecho representa um segmento reservável (CaronaID + Origem + Destino)
 type ItemTrecho struct {
 	CaronaID       string  `json:"carona_id"`
+	EmpresaID      string  `json:"empresa_id,omitempty"`
 	Origem         string  `json:"origem"`
 	Destino        string  `json:"destino"`
 	Preco          float64 `json:"preco,omitempty"`
@@ -56,6 +60,7 @@ type TrechoCaronaDTO struct {
 // CaronaDTO representa os dados públicos de uma carona cadastrada
 type CaronaDTO struct {
 	CaronaID       string            `json:"carona_id"`
+	EmpresaID      string            `json:"empresa_id,omitempty"`
 	Motorista      string            `json:"motorista,omitempty"`
 	Rota           []string          `json:"rota"`
 	Data           string            `json:"data"`
@@ -76,6 +81,19 @@ type ReservaDTO struct {
 	Status     string       `json:"status"`
 }
 
+// HoldDTO representa um bloqueio temporário (Lease / Fase 1 do 2PC)
+type HoldDTO struct {
+	HoldID           string       `json:"hold_id"`
+	Passageiro       string       `json:"passageiro,omitempty"`
+	Trechos          []ItemTrecho `json:"trechos"`
+	PrecoTotal       float64      `json:"preco_total"`
+	Data             string       `json:"data"`
+	Status           string       `json:"status"`
+	LamportTempo     uint64       `json:"lamport_tempo,omitempty"`
+	LamportNodoID    string       `json:"lamport_nodo_id,omitempty"`
+	ExpiraEmUnixMs   int64        `json:"expira_em_unix_ms,omitempty"`
+}
+
 type Requisicao struct {
 	// Dados enviados do cliente para o servidor
 	Acao           string       `json:"acao"`
@@ -84,6 +102,7 @@ type Requisicao struct {
 	Nome           string       `json:"nome,omitempty"`
 	Papel          string       `json:"papel,omitempty"`
 	Token          string       `json:"token,omitempty"`
+	EmpresaID      string       `json:"empresa_id,omitempty"`
 	Rota           []string     `json:"rota,omitempty"`
 	Data           string       `json:"data,omitempty"`
 	Horario        string       `json:"horario,omitempty"`
@@ -94,6 +113,10 @@ type Requisicao struct {
 	Destino        string       `json:"destino,omitempty"`
 	CaronaID       string       `json:"carona_id,omitempty"`
 	ReservaID      string       `json:"reserva_id,omitempty"`
+	HoldID         string       `json:"hold_id,omitempty"`
+	TTLMillis      int64        `json:"ttl_millis,omitempty"`
+	LamportTempo   uint64       `json:"lamport_tempo,omitempty"`
+	LamportNodoID  string       `json:"lamport_nodo_id,omitempty"`
 	Trechos        []ItemTrecho `json:"trechos,omitempty"`
 }
 
@@ -107,8 +130,11 @@ type Resposta struct {
 	Nome        string          `json:"nome,omitempty"`
 	CaronaID    string          `json:"carona_id,omitempty"`
 	ReservaID   string          `json:"reserva_id,omitempty"`
+	HoldID      string          `json:"hold_id,omitempty"`
 	Cidades     []string        `json:"cidades,omitempty"`
 	Itinerarios []ItinerarioDTO `json:"itinerarios,omitempty"`
 	Caronas     []CaronaDTO     `json:"caronas,omitempty"`
 	Reservas    []ReservaDTO    `json:"reservas,omitempty"`
+	Holds       []HoldDTO       `json:"holds,omitempty"`
+	Hold        *HoldDTO        `json:"hold,omitempty"`
 }
