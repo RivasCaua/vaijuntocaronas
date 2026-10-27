@@ -15,22 +15,31 @@ import (
 
 // GerenciadorEstado mantem todos os dados em memoria com controle de concorrencia
 type GerenciadorEstado struct {
-	mu           sync.RWMutex        // Trava para evitar condicao de corrida entre multiplos clientes
-	usuarios     map[string]*Usuario // Mapa de login -> Usuario
-	sessoes      map[string]*Sessao  // Mapa de token -> Sessao
-	caronas      map[string]*Carona  // Mapa de ID -> Carona
-	reservas     map[string]*Reserva // Mapa de ID -> Reserva
-	seqCaronaId  int
-	seqReservaId int
+	mu                  sync.RWMutex        // Trava para evitar condicao de corrida entre multiplos clientes
+	usuarios            map[string]*Usuario // Mapa de login -> Usuario
+	sessoes             map[string]*Sessao  // Mapa de token -> Sessao
+	caronas             map[string]*Carona  // Mapa de ID -> Carona
+	reservas            map[string]*Reserva // Mapa de ID -> Reserva
+	holds               map[string]*Hold    // Mapa de ID -> Hold (Leases temporários para 2PC)
+	holdParaReserva     map[string]string   // Mapa de HoldID -> ReservaID, para tornar ConfirmarHoldInterno idempotente sob retentativa
+	seqCaronaId         int
+	seqReservaId        int
+	seqHoldId           int
+	caminhoPersistencia string
+	stopCleaner         chan struct{}
+	cleanerAtivo        bool
 }
 
 // NovoGerenciadorEstado inicializa a estrutura do gerenciador
 func NovoGerenciadorEstado() *GerenciadorEstado {
 	return &GerenciadorEstado{
-		usuarios: make(map[string]*Usuario),
-		sessoes:  make(map[string]*Sessao),
-		caronas:  make(map[string]*Carona),
-		reservas: make(map[string]*Reserva),
+		usuarios:        make(map[string]*Usuario),
+		sessoes:         make(map[string]*Sessao),
+		caronas:         make(map[string]*Carona),
+		reservas:        make(map[string]*Reserva),
+		holds:           make(map[string]*Hold),
+		holdParaReserva: make(map[string]string),
+		stopCleaner:     make(chan struct{}),
 	}
 }
 
@@ -44,8 +53,22 @@ func gerarTokenSeguro() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// CadastrarUsuario adiciona um novo motorista ou passageiro de forma segura
+// CadastrarUsuario adiciona um novo motorista ou passageiro de forma segura.
+// Atalho sem persistência externa, usado pelos testes e por quem não precisa da garantia de
+// atomicidade entre memória e disco - ver CadastrarUsuarioComPersistencia para o caminho real
+// usado pelo servidor.
 func (g *GerenciadorEstado) CadastrarUsuario(login, senha, nome, papel string) error {
+	return g.CadastrarUsuarioComPersistencia(login, senha, nome, papel, func() error { return nil })
+}
+
+// CadastrarUsuarioComPersistencia adiciona um novo usuário e, AINDA SOB A MESMA TRAVA que protege o
+// mapa de usuários, chama "persistir" (tipicamente a gravação no WAL) antes de considerar a operação
+// concluída. Se "persistir" falhar, o cadastro é desfeito atomicamente antes da trava ser liberada -
+// nenhuma outra goroutine jamais enxerga um usuário "cadastrado" que não está (ou pode não estar)
+// gravado de forma durável. Isso fecha, pela raiz, a janela de inconsistência memória-vs-disco que
+// existia quando a persistência acontecia DEPOIS da trava ser liberada (ver seção 12 do
+// docs/api_consorcio.md para o caso irmão, já corrigido, de CancelarReserva).
+func (g *GerenciadorEstado) CadastrarUsuarioComPersistencia(login, senha, nome, papel string, persistir func() error) error {
 	login = strings.TrimSpace(login)
 	senha = strings.TrimSpace(senha)
 	nome = strings.TrimSpace(nome)
@@ -71,6 +94,11 @@ func (g *GerenciadorEstado) CadastrarUsuario(login, senha, nome, papel string) e
 		Senha: senha,
 		Nome:  nome,
 		Papel: papel,
+	}
+
+	if err := persistir(); err != nil {
+		delete(g.usuarios, login)
+		return fmt.Errorf("falha ao persistir cadastro de forma duravel: %w", err)
 	}
 
 	return nil
@@ -132,8 +160,18 @@ func (g *GerenciadorEstado) ObterTotalUsuarios() int {
 	return len(g.usuarios)
 }
 
-// PublicarCarona desmembra a rota em trechos e inicializa as vagas por trecho
-func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, horario, horarioChegada string, assentos int, preco float64) (string, error) {
+// PublicarCarona desmembra a rota em trechos e inicializa as vagas por trecho.
+// empresaID é opcional; se não informado, assume "empresa-local". Atalho sem persistência externa -
+// ver PublicarCaronaComPersistencia para o caminho real usado pelo servidor.
+func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, horario, horarioChegada string, assentos int, preco float64, empresaID ...string) (string, error) {
+	return g.PublicarCaronaComPersistencia(token, rota, data, horario, horarioChegada, assentos, preco, func(string) error { return nil }, empresaID...)
+}
+
+// PublicarCaronaComPersistencia publica a carona e, ainda sob a trava, chama "persistir" (recebendo
+// o ID já gerado para a carona, necessário para montar o registro do WAL) antes de confirmar - se
+// falhar, a carona recém-criada é removida atomicamente (ver CadastrarUsuarioComPersistencia para a
+// justificativa completa do padrão).
+func (g *GerenciadorEstado) PublicarCaronaComPersistencia(token string, rota []string, data, horario, horarioChegada string, assentos int, preco float64, persistir func(caronaID string) error, empresaID ...string) (string, error) {
 	u, err := g.ValidarToken(token)
 	if err != nil {
 		return "", err
@@ -151,8 +189,14 @@ func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, ho
 		return "", errors.New("assentos e preco por trecho devem ser maiores que zero")
 	}
 
+	data = strings.TrimSpace(data)
 	horario = strings.TrimSpace(horario)
 	horarioChegada = strings.TrimSpace(horarioChegada)
+
+	idEmpresa := "empresa-local"
+	if len(empresaID) > 0 && strings.TrimSpace(empresaID[0]) != "" {
+		idEmpresa = strings.TrimSpace(empresaID[0])
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -171,6 +215,7 @@ func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, ho
 
 	g.caronas[caronaID] = &Carona{
 		ID:                   caronaID,
+		EmpresaID:            idEmpresa,
 		MotoristaLogin:       u.Login,
 		Rota:                 rotaValida,
 		Data:                 data,
@@ -181,6 +226,11 @@ func (g *GerenciadorEstado) PublicarCarona(token string, rota []string, data, ho
 		VagasPorTrecho:       vagasPorTrecho,
 		PassageirosPorTrecho: passageirosPorTrecho,
 		Ativa:                true,
+	}
+
+	if err := persistir(caronaID); err != nil {
+		delete(g.caronas, caronaID)
+		return "", fmt.Errorf("falha ao persistir carona de forma duravel: %w", err)
 	}
 
 	return caronaID, nil
@@ -233,6 +283,7 @@ func (g *GerenciadorEstado) BuscarItinerarios(origem, destino, data string) ([]p
 
 				trechos = append(trechos, protocolo.ItemTrecho{
 					CaronaID:       c.ID,
+					EmpresaID:      c.EmpresaID,
 					Origem:         o,
 					Destino:        d,
 					Preco:          c.PrecoPorTrecho,
@@ -309,10 +360,11 @@ func (g *GerenciadorEstado) ReservarItinerario(token string, trechosSolicitados 
 		dataViagem = carona.Data
 
 		itemsReserva = append(itemsReserva, ItemTrechoReserva{
-			CaronaID: item.CaronaID,
-			Origem:   item.Origem,
-			Destino:  item.Destino,
-			Preco:    carona.PrecoPorTrecho,
+			CaronaID:  item.CaronaID,
+			EmpresaID: carona.EmpresaID,
+			Origem:    item.Origem,
+			Destino:   item.Destino,
+			Preco:     carona.PrecoPorTrecho,
 		})
 	}
 
@@ -330,6 +382,21 @@ func (g *GerenciadorEstado) ReservarItinerario(token string, trechosSolicitados 
 	}
 
 	return reservaID, nil
+}
+
+// ObterReserva retorna uma copia de consulta de uma Reserva por ID, para uso interno (ex: registro no WAL).
+func (g *GerenciadorEstado) ObterReserva(reservaID string) (*Reserva, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	r, existe := g.reservas[reservaID]
+	if !existe {
+		return nil, fmt.Errorf("reserva %s nao encontrada", reservaID)
+	}
+
+	copia := *r
+	copia.Trechos = append([]ItemTrechoReserva(nil), r.Trechos...)
+	return &copia, nil
 }
 
 // ListarCaronasMotorista retorna as caronas cadastradas pelo motorista com detalhes dos trechos
@@ -363,6 +430,7 @@ func (g *GerenciadorEstado) ListarCaronasMotorista(token string) ([]protocolo.Ca
 
 			caronasDTO = append(caronasDTO, protocolo.CaronaDTO{
 				CaronaID:       c.ID,
+				EmpresaID:      c.EmpresaID,
 				Motorista:      c.MotoristaLogin,
 				Rota:           c.Rota,
 				Data:           c.Data,
@@ -379,7 +447,16 @@ func (g *GerenciadorEstado) ListarCaronasMotorista(token string) ([]protocolo.Ca
 }
 
 // CancelarCarona desativa a carona e cancela as reservas vinculadas a ela
+// CancelarCarona atalho sem persistência externa - ver CancelarCaronaComPersistencia.
 func (g *GerenciadorEstado) CancelarCarona(token, caronaID string) error {
+	return g.CancelarCaronaComPersistencia(token, caronaID, func() error { return nil })
+}
+
+// CancelarCaronaComPersistencia desativa a carona e, ainda sob a trava, chama "persistir" antes de
+// confirmar - se falhar, a carona e TODAS as reservas que esta chamada marcou como
+// "CANCELADA_PELO_MOTORISTA" (e só essas, nunca reservas já canceladas por outro motivo antes desta
+// chamada) voltam exatamente ao estado anterior.
+func (g *GerenciadorEstado) CancelarCaronaComPersistencia(token, caronaID string, persistir func() error) error {
 	u, err := g.ValidarToken(token)
 	if err != nil {
 		return err
@@ -399,6 +476,7 @@ func (g *GerenciadorEstado) CancelarCarona(token, caronaID string) error {
 
 	c.Ativa = false
 
+	var reservasAfetadas []*Reserva
 	for _, r := range g.reservas {
 		if r.Status == "ATIVA" {
 			afetada := false
@@ -410,8 +488,17 @@ func (g *GerenciadorEstado) CancelarCarona(token, caronaID string) error {
 			}
 			if afetada {
 				r.Status = "CANCELADA_PELO_MOTORISTA"
+				reservasAfetadas = append(reservasAfetadas, r)
 			}
 		}
+	}
+
+	if err := persistir(); err != nil {
+		c.Ativa = true
+		for _, r := range reservasAfetadas {
+			r.Status = "ATIVA"
+		}
+		return fmt.Errorf("falha ao persistir cancelamento de carona de forma duravel: %w", err)
 	}
 
 	return nil
@@ -434,10 +521,11 @@ func (g *GerenciadorEstado) ListarReservasPassageiro(token string) ([]protocolo.
 			var trechosDTO []protocolo.ItemTrecho
 			for _, item := range r.Trechos {
 				trechosDTO = append(trechosDTO, protocolo.ItemTrecho{
-					CaronaID: item.CaronaID,
-					Origem:   item.Origem,
-					Destino:  item.Destino,
-					Preco:    item.Preco,
+					CaronaID:  item.CaronaID,
+					EmpresaID: item.EmpresaID,
+					Origem:    item.Origem,
+					Destino:   item.Destino,
+					Preco:     item.Preco,
 				})
 			}
 
@@ -455,8 +543,27 @@ func (g *GerenciadorEstado) ListarReservasPassageiro(token string) ([]protocolo.
 	return reservasDTO, nil
 }
 
-// CancelarReserva devolve as vagas aos sub-trechos e altera o status para CANCELADA
+// CancelarReserva devolve as vagas aos sub-trechos e altera o status para CANCELADA. Atalho sem
+// persistência externa - ver CancelarReservaComPersistencia para o caminho real usado pelo servidor.
 func (g *GerenciadorEstado) CancelarReserva(token, reservaID string) error {
+	return g.CancelarReservaComPersistencia(token, reservaID, func() error { return nil })
+}
+
+// CancelarReservaComPersistencia cancela a reserva e, ainda sob a MESMA trava que protege o
+// inventário de vagas, chama "persistir" (tipicamente a gravação no WAL) antes de liberar a trava.
+// Se "persistir" falhar, a reversão acontece atomicamente ali mesmo, sem nunca ter liberado a trava
+// entre a devolução da vaga e a tentativa de persistência.
+//
+// Esta ordem importa de verdade: uma versão anterior deste método devolvia a vaga, liberava a trava,
+// e só então o chamador tentava persistir; se a persistência falhasse, um método separado
+// ("ReverterCancelamentoReserva") tentava desfazer a devolução - mas entre a liberação da trava e essa
+// reversão, QUALQUER outra reserva concorrente podia legitimamente ocupar a vaga recém-liberada,
+// e a reversão então re-debitava a vaga (ou re-adicionava o passageiro) sem saber que ela já tinha
+// dono novo, corrompendo a contagem (podendo até ficar negativa) e colocando dois passageiros no
+// mesmo assento. Mantendo a trava presa durante TODO o ciclo mutação-e-persistência, a vaga nunca
+// fica visivelmente livre para um concorrente a menos que o cancelamento já esteja garantidamente
+// durável - fechando essa janela pela raiz, em vez de tentar consertar depois que ela já abriu.
+func (g *GerenciadorEstado) CancelarReservaComPersistencia(token, reservaID string, persistir func() error) error {
 	u, err := g.ValidarToken(token)
 	if err != nil {
 		return err
@@ -476,9 +583,18 @@ func (g *GerenciadorEstado) CancelarReserva(token, reservaID string) error {
 
 	r.Status = "CANCELADA"
 
+	type trechoAfetado struct {
+		chave               string
+		carona              *Carona
+		passageirosOriginal []string
+	}
+	var afetados []trechoAfetado
+
 	for _, item := range r.Trechos {
 		if c, ok := g.caronas[item.CaronaID]; ok {
 			chave := fmt.Sprintf("%s->%s", item.Origem, item.Destino)
+			afetados = append(afetados, trechoAfetado{chave: chave, carona: c, passageirosOriginal: c.PassageirosPorTrecho[chave]})
+
 			c.VagasPorTrecho[chave]++
 
 			novosPassageiros := make([]string, 0)
@@ -491,5 +607,145 @@ func (g *GerenciadorEstado) CancelarReserva(token, reservaID string) error {
 		}
 	}
 
+	if err := persistir(); err != nil {
+		r.Status = "ATIVA"
+		for _, a := range afetados {
+			a.carona.VagasPorTrecho[a.chave]--
+			a.carona.PassageirosPorTrecho[a.chave] = a.passageirosOriginal
+		}
+		return fmt.Errorf("falha ao persistir cancelamento de forma duravel: %w", err)
+	}
+
 	return nil
+}
+
+// ListarCaronasPorEmpresa retorna as caronas ativas vinculadas a uma empresa parceira
+func (g *GerenciadorEstado) ListarCaronasPorEmpresa(empresaID string) ([]protocolo.CaronaDTO, error) {
+	empresaID = strings.TrimSpace(empresaID)
+	if empresaID == "" {
+		return nil, errors.New("identificador de empresa parceira nao pode ser vazio")
+	}
+
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	var caronasDTO []protocolo.CaronaDTO
+
+	for _, c := range g.caronas {
+		if c.EmpresaID == empresaID && c.Ativa {
+			var trechosDTO []protocolo.TrechoCaronaDTO
+			for i := 0; i < len(c.Rota)-1; i++ {
+				o := c.Rota[i]
+				d := c.Rota[i+1]
+				chave := fmt.Sprintf("%s->%s", o, d)
+
+				trechosDTO = append(trechosDTO, protocolo.TrechoCaronaDTO{
+					Trecho:      chave,
+					Origem:      o,
+					Destino:     d,
+					VagasLivres: c.VagasPorTrecho[chave],
+					Passageiros: c.PassageirosPorTrecho[chave],
+				})
+			}
+
+			caronasDTO = append(caronasDTO, protocolo.CaronaDTO{
+				CaronaID:       c.ID,
+				EmpresaID:      c.EmpresaID,
+				Motorista:      c.MotoristaLogin,
+				Rota:           c.Rota,
+				Data:           c.Data,
+				Horario:        c.Horario,
+				HorarioChegada: c.HorarioChegada,
+				Assentos:       c.AssentosTotais,
+				PrecoPorTrecho: c.PrecoPorTrecho,
+				Trechos:        trechosDTO,
+			})
+		}
+	}
+
+	return caronasDTO, nil
+}
+
+// ListarTodasCaronasAtivas retorna todas as caronas ativas deste nó, independente da empresa,
+// opcionalmente filtradas por data de viagem (data vazia retorna todas as datas). Usado tanto pelo
+// endpoint REST "/api/v1/caronas" quanto pela busca federada do consórcio, que precisa do inventário
+// bruto de sub-trechos de um nó para montar itinerários combinando caronas de empresas diferentes.
+func (g *GerenciadorEstado) ListarTodasCaronasAtivas(data string) ([]protocolo.CaronaDTO, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	var caronasDTO []protocolo.CaronaDTO
+
+	for _, c := range g.caronas {
+		if !c.Ativa {
+			continue
+		}
+		if data != "" && c.Data != data {
+			continue
+		}
+
+		var trechosDTO []protocolo.TrechoCaronaDTO
+		for i := 0; i < len(c.Rota)-1; i++ {
+			o := c.Rota[i]
+			d := c.Rota[i+1]
+			chave := fmt.Sprintf("%s->%s", o, d)
+
+			trechosDTO = append(trechosDTO, protocolo.TrechoCaronaDTO{
+				Trecho:      chave,
+				Origem:      o,
+				Destino:     d,
+				VagasLivres: c.VagasPorTrecho[chave],
+				Passageiros: c.PassageirosPorTrecho[chave],
+			})
+		}
+
+		caronasDTO = append(caronasDTO, protocolo.CaronaDTO{
+			CaronaID:       c.ID,
+			EmpresaID:      c.EmpresaID,
+			Motorista:      c.MotoristaLogin,
+			Rota:           c.Rota,
+			Data:           c.Data,
+			Horario:        c.Horario,
+			HorarioChegada: c.HorarioChegada,
+			Assentos:       c.AssentosTotais,
+			PrecoPorTrecho: c.PrecoPorTrecho,
+			Trechos:        trechosDTO,
+		})
+	}
+
+	return caronasDTO, nil
+}
+
+// ObterEmpresaCarona retorna a empresa parceira dona da carona especificada
+func (g *GerenciadorEstado) ObterEmpresaCarona(caronaID string) (string, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	c, existe := g.caronas[caronaID]
+	if !existe {
+		return "", fmt.Errorf("carona %s nao encontrada", caronaID)
+	}
+
+	return c.EmpresaID, nil
+}
+
+// ObterTotalHolds retorna a contagem total de holds registrados
+func (g *GerenciadorEstado) ObterTotalHolds() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.holds)
+}
+
+// ObterTotalReservas retorna a contagem total de reservas registradas
+func (g *GerenciadorEstado) ObterTotalReservas() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.reservas)
+}
+
+// ObterTotalCaronas retorna a contagem total de caronas registradas
+func (g *GerenciadorEstado) ObterTotalCaronas() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.caronas)
 }
