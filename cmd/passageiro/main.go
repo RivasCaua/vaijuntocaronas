@@ -343,7 +343,8 @@ func login(conn net.Conn, scannerRede *bufio.Scanner, scannerTeclado *bufio.Scan
 
 	if resp.Status == protocolo.StatusOK {
 		if resp.Papel != protocolo.PapelPassageiro {
-			fmt.Printf("[AVISO] Atencao: Conta cadastrada como '%s', em modulo de passageiro.\n", resp.Papel)
+			fmt.Printf("[ERRO] Esta conta esta cadastrada como '%s', nao como passageiro. Use o cliente de %s para entrar.\n", resp.Papel, resp.Papel)
+			return nil
 		}
 		fmt.Printf("[SUCESSO] %s\n", resp.Mensagem)
 		return &SessaoCliente{
